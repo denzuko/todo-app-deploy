@@ -57,11 +57,12 @@ consistently, in every function that uses it, without noticing, because the
 call *looks* like it returns the exit code.
 
 **6. Spinneret decides whether to quote an HTML attribute value from the
-literal string it's given at template-generation time — not from what a
-later substitution pass will put there.**
-This script generates HTML templates that PostgreSQL's own `format()`
-fills in at request time, with Spinneret only ever seeing the placeholder
-text (`"%s"`) at generation time. Since `"%s"` has no whitespace, Spinneret
+literal string it's given at compile time — and that decision, unlike most
+things gated by a special variable, can't be overridden with a runtime
+`LET`.**
+This script generates HTML templates that PostgreSQL's own `format()` fills
+in at request time, with Spinneret only ever seeing the placeholder text
+(`"%s"`) at generation time. Since `"%s"` has no whitespace, Spinneret
 omits the surrounding quotes:
 ```html
 <span class=%s>%s</span>
@@ -70,26 +71,44 @@ which is syntactically valid HTML *for that literal string*, and silently
 broken HTML the instant PostgreSQL substitutes in a value that contains a
 space — exactly what happens for a completed to-do item, whose class value
 is `line-through text-gray-400`. Nothing in the pipeline errors; the browser
-just gets a malformed tag and a bogus extra attribute. Caught only by
-actually calling the generated function and reading its output.
+just gets a malformed tag and a bogus extra attribute.
 
-A related issue in the same template: Spinneret treats the Lisp keyword
-`:disabled` as HTML5's native boolean `disabled` attribute, so
+Spinneret already has the fix: `spinneret:*always-quote*`, a documented,
+exported, tested special variable that does exactly this. The first attempt
+to use it didn't work —
+```lisp
+(let ((spinneret:*always-quote* t))
+  (spinneret:with-html-string ...))
+```
+still produced unquoted output — because the quoting decision happens at
+*macroexpansion* time, when the `defun` containing the template is
+compiled, not at runtime when it's called. A `LET` around the call site is
+silently a no-op; only a top-level `(setf spinneret:*always-quote* t)`
+evaluated *before* the template-generating functions are compiled actually
+works. Nothing about that surprised the reader until it was tested — the
+variable's docstring ("Add quotes to all attributes.") gives no hint that
+`LET` won't do what it looks like it should do.
+
+A related, separate issue in the same template: Spinneret treats the Lisp
+keyword `:disabled` as HTML5's native boolean `disabled` attribute, so
 ```lisp
 (:button ::disabled "!taskInput.trim()" ...)
 ```
 collapses to a bare `disabled` — Alpine.js's `:disabled="expr"` binding is
 discarded entirely, with no warning that the value was ever thrown away.
-Pipe-quoting the symbol as `:|:disabled|` avoids the name collision, but
-Spinneret still omits the quotes around the value whenever that value
-happens to contain no whitespace — true for this particular expression, not
-something to rely on in general.
+Pipe-quoting the attribute name as `:|:disabled|` sidesteps the collision
+(it's a different literal name than `disabled`), and combined with
+`*always-quote*` set at load time, produces the fully correct
+`:disabled="!taskInput.trim()"`.
 
-The fix applied here: any attribute whose value contains a runtime
-placeholder is written as an explicitly hand-quoted string rather than
-passed through Spinneret's declarative tag macros, since Spinneret's
-quoting decision is made with information (the eventual substituted value)
-that it doesn't have.
+One placeholder in this script's per-row template genuinely can't be
+expressed through Spinneret's declarative macros at all, and this isn't
+a Spinneret shortcoming: the checkbox's `checked` state is an HTML5 boolean
+attribute, whose presence Spinneret can only decide from a Lisp-level
+true/false value at generation time — and whether a given row is done isn't
+known until PostgreSQL resolves it at request time. That one input stays a
+hand-written `:raw` placeholder for that reason; every other element in
+both templates is ordinary declarative Spinneret markup.
 
 ## Idempotency bugs in the schema itself
 

@@ -91,3 +91,10 @@ the narrative version of what's below.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Upstream
+
+Two documentation patches came out of building this — see
+[UPSTREAM.md](UPSTREAM.md) for the reasoning, and
+[`upstream-patches/`](upstream-patches/) for the ready-to-send
+`.patch` files and git bundles against Consfigurator and Spinneret.

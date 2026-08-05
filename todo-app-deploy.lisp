@@ -18,9 +18,11 @@ exec ros -Q -- $0 "$@"
   (:import-from :spinneret :with-html-string)
   (:import-from :40ants-doc :defsection)
   (:export :*service-user* :*home-mountpoint* :*secrets-path* :*haproxy-fqdn*
-           :*home-dataset* :*data-dataset* :main))
+           :*home-dataset* :*data-dataset* :deploy))
 
 (in-package :todo-app-deploy)
+
+(setf spinneret:*always-quote* t)
 
 (defparameter *app-name* "todo-app"
   "Name used across ZFS datasets, the service account, and the HAProxy vhost.")
@@ -218,16 +220,16 @@ backend ~A_be
    is PostgreSQL's own format() substitution syntax, not Lisp's `~A` — this
    string is only ever read by PostgreSQL's format() at request time, after
    Lisp's own format has already finished substituting the whole template
-   into the SQL body. The Add button is :RAW rather than a declarative
-   :BUTTON form for two reasons found by actually rendering this and
-   reading the output: Spinneret treats the Lisp keyword :DISABLED as the
-   native HTML5 boolean attribute of the same name, so a value passed
-   there collapses to a bare `disabled` and Alpine's `:disabled=\"expr\"`
-   binding is silently dropped rather than rendered — pipe-quoting the
-   symbol as :|:disabled| avoids the collision but Spinneret still omits
-   the surrounding quotes whenever the literal value it was generated
-   with contains no whitespace, which happens to be true for this
-   particular expression but isn't something to rely on generally."
+   into the SQL body. The Add button's Alpine `:disabled=\"expr\"` binding
+   needs the attribute name pipe-quoted as :|:disabled| — Spinneret treats
+   the plain keyword :DISABLED as HTML5's native boolean attribute of the
+   same name, and a value passed there collapses to a bare `disabled`,
+   silently dropping the whole Alpine binding with no warning that it
+   happened. SPINNERET:*ALWAYS-QUOTE* is set at the top of this file, before
+   this function is compiled, which is what keeps that attribute's value —
+   and every attribute value in GENERATE-RENDER-TODO-HTML-TEMPLATE below —
+   properly quoted even though the literal placeholder text Spinneret sees
+   at generation time never itself contains whitespace."
   (spinneret:with-html-string
     (:doctype)
     (:html :lang "en"
@@ -252,35 +254,39 @@ backend ~A_be
                     :placeholder "What needs to be done?"
                     :required t
                     :class "flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500")
-            (:raw "<button type=\"submit\" :disabled=\"!taskInput.trim()\" class=\"px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition\">Add</button>"))
+            (:button :type "submit"
+                     :|:disabled| "!taskInput.trim()"
+                     :class "px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition"
+                     "Add"))
           (:ul :id "todo-list" :class "space-y-3"
             (:raw "%s")))))))
 
 (defun generate-render-todo-html-template ()
-  "Build the per-todo <li> fragment as a hand-quoted string rather than
-   Spinneret's declarative tag macros. It started as Spinneret markup, the
-   same as the index shell above, but rendering it and reading the actual
-   output showed the problem with that: Spinneret decides whether to quote
-   an attribute value from the literal string it's given at generation
-   time — and every attribute here is a bare `%s` or similar placeholder,
-   which has no spaces, so Spinneret omits the quotes. That's fine right up
-   until PostgreSQL's format() substitutes in something that DOES contain a
-   space — the CLASS attribute's `line-through text-gray-400` for a done
-   row — at which point the unquoted output is broken HTML, silently, with
-   no error anywhere in the pipeline to catch it. Spinneret's quoting
-   heuristic is simply the wrong tool once a template's real content
-   arrives after Spinneret is finished with it; every attribute is quoted
-   by hand here for that reason, not stylistic preference. Placeholder
-   order: li id, checked, hx-patch id, hx-target id, span class, span
-   content, hx-delete id, hx-target id — eight `%s` total, matching the
-   eight arguments render_todo passes to PostgreSQL's format()."
-  "<li id=\"todo-%s\" class=\"flex items-center justify-between p-3 bg-gray-50 rounded border border-gray-200\">
-  <div class=\"flex items-center gap-3\">
-    <input type=\"checkbox\" %s hx-patch=\"/rpc/toggle_todo?id=%s\" hx-target=\"#todo-%s\" hx-swap=\"outerHTML\" class=\"h-5 w-5 text-indigo-600 rounded focus:ring-indigo-500 cursor-pointer\">
-    <span class=\"%s\">%s</span>
-  </div>
-  <button hx-delete=\"/rpc/delete_todo?id=%s\" hx-target=\"#todo-%s\" hx-swap=\"outerHTML text\" class=\"text-red-500 hover:text-red-700 font-medium text-sm\">Delete</button>
-</li>")
+  "Generate the per-todo <li> fragment via Spinneret. The checkbox's
+   `checked` state is the one piece of this template Spinneret can't
+   express declaratively: every other attribute here is a plain string
+   value, always quoted correctly thanks to *ALWAYS-QUOTE*, but `checked`
+   is an HTML5 boolean attribute whose presence Spinneret can only decide
+   from a Lisp-level true/false value at generation time — and whether a
+   given row is done isn't known until PostgreSQL's format() resolves it at
+   request time. That's a genuine boundary between the two templating
+   systems rather than anything Spinneret does wrong, so that one input
+   stays a hand-written :RAW placeholder; every other element here is
+   ordinary Spinneret markup. Placeholder order: li id, checked, hx-patch
+   id, hx-target id, span class, span content, hx-delete id, hx-target id —
+   eight `%s` total, matching the eight arguments render_todo passes to
+   PostgreSQL's format()."
+  (spinneret:with-html-string
+    (:li :id "todo-%s"
+         :class "flex items-center justify-between p-3 bg-gray-50 rounded border border-gray-200"
+      (:div :class "flex items-center gap-3"
+        (:raw "<input type=\"checkbox\" %s hx-patch=\"/rpc/toggle_todo?id=%s\" hx-target=\"#todo-%s\" hx-swap=\"outerHTML\" class=\"h-5 w-5 text-indigo-600 rounded focus:ring-indigo-500 cursor-pointer\">")
+        (:span :class "%s" "%s"))
+      (:button :hx-delete "/rpc/delete_todo?id=%s"
+               :hx-target "#todo-%s"
+               :hx-swap "outerHTML text"
+               :class "text-red-500 hover:text-red-700 font-medium text-sm"
+        "Delete"))))
 
 (defun escape-pg-string-literal (text)
   "Double any single quotes in TEXT so it can be embedded as a PostgreSQL
@@ -491,7 +497,7 @@ $$ LANGUAGE plpgsql VOLATILE"
         (cl-migratum.core:apply-pending driver)
         (cl-migratum.core:driver-shutdown driver)))))
 
-(defun main ()
+(defun deploy ()
   "Execute system deployment and database initialization in sequence.
    Datasets before the account that lives on them, account+linger before
    secrets/images/quadlets, HAProxy last since it depends on the backend
@@ -558,13 +564,13 @@ $$ LANGUAGE plpgsql VOLATILE"
    groveled native bindings are exactly the fragile dependency this stays
    away from.
 
-   MAIN runs the whole thing in order, and is the place to start reading.
+   DEPLOY runs the whole thing in order, and is the place to start reading.
    Once it's deployed, TODO-APP-DEPLOY.E2E validates the result."
 
   (@provisioning section)
   (@quadlets section)
   (@database section)
-  (main function))
+  (deploy function))
 
 (defsection @provisioning (:title "ZFS, the service account, and secrets")
   "Before any container can start, the host needs: two ZFS datasets (one
@@ -573,7 +579,7 @@ $$ LANGUAGE plpgsql VOLATILE"
    keeps running without anyone logged in, a database password generated
    once and kept around for the life of the data volume, and the two
    container images already sitting in that account's own rootless image
-   store. Each of these is a plain function MAIN calls in sequence, doing
+   store. Each of these is a plain function DEPLOY calls in sequence, doing
    its own idempotence check before touching anything."
   (*home-mountpoint* variable)
   (*data-mountpoint* variable)
@@ -690,7 +696,7 @@ $$ LANGUAGE plpgsql VOLATILE"
 (in-suite todo-app-e2e)
 
 (test zfs-datasets-mounted
-  "Both datasets exist and are mounted where TODO-APP-DEPLOY:MAIN put them."
+  "Both datasets exist and are mounted where TODO-APP-DEPLOY:DEPLOY put them."
   (is (equal *home-mountpoint* (zfs-dataset-mountpoint *home-dataset*)))
   (is (equal "/srv/todo-app" (zfs-dataset-mountpoint *data-dataset*))))
 
@@ -768,7 +774,7 @@ $$ LANGUAGE plpgsql VOLATILE"
   (run! 'todo-app-e2e))
 
 (defsection @todo-app-e2e (:title "todo-app-deploy e2e")
-  "Post-deploy validation for the stack TODO-APP-DEPLOY:MAIN brings up,
+  "Post-deploy validation for the stack TODO-APP-DEPLOY:DEPLOY brings up,
    written against the deployed result rather than against its own
    generator functions — those get their own pre-deploy FiveAM specs
    separately. This suite shells out the same way BATS would for the
@@ -791,11 +797,12 @@ $$ LANGUAGE plpgsql VOLATILE"
   "Entry point for `./todo-app-deploy.lisp [e2e]`. Roswell calls this
    automatically after loading the script — it isn't invoked explicitly
    here — so this has to be CL-USER::MAIN specifically, taking &REST ARGV,
-   per Roswell's own script convention; TODO-APP-DEPLOY:MAIN underneath is
-   a distinct, differently-shaped function this dispatches to. With no
-   arguments, deploys the stack. With `e2e`, runs
-   TODO-APP-DEPLOY.E2E:RUN-E2E against whatever's already deployed
-   instead."
-  (if (member "e2e" argv :test #'string=)
-      (todo-app-deploy.e2e:run-e2e)
-      (todo-app-deploy:main)))
+   per Roswell's own script convention; TODO-APP-DEPLOY:DEPLOY underneath
+   is a distinct, differently-shaped, differently-named function this
+   dispatches to — differently-named so there's only ever one thing in
+   this file called MAIN. With no arguments, deploys the stack. With
+   `e2e`, runs TODO-APP-DEPLOY.E2E:RUN-E2E against whatever's already
+   deployed instead."
+  (unless (member "e2e" argv :test #'string=)
+    (return-from main (todo-app-deploy:deploy)))
+  (todo-app-deploy.e2e:run-e2e))

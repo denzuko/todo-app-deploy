@@ -1,0 +1,126 @@
+From 71069d5ea20bba21561f9ae54e44c19364483ee9 Mon Sep 17 00:00:00 2001
+From: Den Zuko <denzuko@dapla.net>
+Date: Wed, 5 Aug 2026 09:29:46 +0000
+Subject: [PATCH] doc: document *always-quote*, its compile-time-only behavior
+
+*always-quote* already does the right thing when a template's attribute
+values are placeholders for another system to substitute into at
+runtime -- e.g. HTML embedded in a SQL string a database fills in with
+its own format() at request time. Spinneret only ever sees the
+placeholder text at generation time, which typically has no whitespace,
+so the default unquoted output is valid for the placeholder and
+silently broken the moment something with whitespace lands there later.
+
+Two things about *always-quote* aren't obvious from its one-line
+docstring and aren't mentioned in the README at all:
+
+- It has to be set with SETF before the code using it is compiled --
+  a LET around the call site has no effect, since whether to quote a
+  given attribute is decided at macroexpansion time, not when the
+  compiled tag form actually runs. This is easy to get backwards on
+  a first read, since most special variables work fine with a
+  dynamic LET.
+- It exists at all, for this specific failure mode -- there's nothing
+  in the README's Validation section (the natural place to look for
+  attribute-related behavior) pointing at it.
+
+This adds a short 'Attribute quoting' section to the README describing
+the failure mode and both gotchas, and expands the *always-quote*
+docstring itself to carry the same warning inline.
+---
+ README.md    | 50 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ special.lisp | 12 +++++++++++-
+ 2 files changed, 61 insertions(+), 1 deletion(-)
+
+diff --git a/README.md b/README.md
+index 2c323e3..57da08a 100644
+--- a/README.md
++++ b/README.md
+@@ -13,6 +13,7 @@
+         - [`*html-path*`](#html-path)
+     - [`deftag`](#deftag)
+     - [Parenscript](#parenscript)
++    - [Attribute quoting](#attribute-quoting)
+     - [Validation](#validation)
+ 
+ <!-- markdown-toc end -->
+@@ -535,6 +536,55 @@ To use Parenscript in Spinneret, remember to wrap the `ps` macro with `:raw`, ot
+ "<div onclick=\"alert('Hello');\"></div>"
+ ```
+ 
++## Attribute quoting
++
++By default, Spinneret only quotes an attribute value when the string it's
++given requires it per the HTML5 spec — values containing whitespace or one
++of `" ' \` = < > /`. This keeps ordinary output compact:
++
++```common-lisp
++(with-html-string (:a :href "/about" "About"))
++;; => "<a href=/about>About</a>"
++```
++
++This becomes a problem if you're generating a template whose attribute
++values are placeholders for another system to fill in later — for example,
++HTML embedded in a SQL string that a database's own `format()`-style
++function will substitute into at request time. Spinneret only ever sees the
++placeholder text (e.g. `"%s"`), which typically contains no whitespace, so
++it omits the quotes. The output is valid HTML for the literal placeholder
++string, and silently broken HTML the moment the other system substitutes in
++a value that *does* contain whitespace — with no error anywhere in the
++pipeline to catch it, since Spinneret already finished and handed off a
++syntactically valid document as far as it knew.
++
++`*always-quote*` exists for exactly this case:
++
++```common-lisp
++(setf *always-quote* t)
++```
++
++quotes every attribute value regardless of content. Two things about it are
++easy to get wrong the first time:
++
++- **It has to be set with `setf`, before the code that uses it is
++  compiled — not `let` around the call site.** Spinneret decides whether to
++  quote a given attribute value at macroexpansion time, so a dynamic
++  binding in effect only at *runtime* has no effect on already-compiled
++  tag forms:
++  ```common-lisp
++  ;; Does NOT work if TEMPLATE was compiled with *always-quote* unbound:
++  (let ((*always-quote* t))
++    (template))
++
++  ;; Works, evaluated before TEMPLATE is compiled:
++  (setf *always-quote* t)
++  (defun template () (with-html-string ...))
++  ```
++- It's a global switch, not scoped to one template. If you only want it for
++  templates like the one above, keep those in their own file or component
++  and set it before loading just that part of your system.
++
+ ## Validation
+ 
+ Spinneret does not do document validation, but it does warn, at compile time, about invalid tags and attributes.
+diff --git a/special.lisp b/special.lisp
+index 5dfe9df..bd2d4f4 100644
+--- a/special.lisp
++++ b/special.lisp
+@@ -44,5 +44,15 @@ This is always measured from the start of the tag.")
+ (declaim (type (member :human :tree) *html-style*))
+ 
+ (defvar *always-quote* nil
+-  "Add quotes to all attributes.")
++  "Add quotes to all attributes, regardless of whether their value would
++otherwise be left unquoted per the HTML5 spec. Useful when generating a
++template whose attribute values are placeholders for another system to
++substitute into later — the default unquoted output is only ever checked
++against the literal placeholder text, not whatever ends up there at
++runtime.
++
++Must be set with SETF before the code using it is compiled, not bound
++with LET around the call site: whether to quote a given attribute is
++decided at macroexpansion time, so a dynamic binding in effect only when
++the already-compiled code runs has no effect.")
+ (declaim (type boolean *always-quote*))
+-- 
+2.43.0
+

@@ -3,18 +3,6 @@ PREFIX    := usr/local
 BUILDROOT := build/$(PREFIX)/bin
 MANROOT   := build/$(PREFIX)/man/man1
 
-# qlfile.lock pins every dependency (109, transitively) to the exact
-# release qlot resolved when it was written (`qlot add <dep>` for each
-# one, or `qlot install` after a manual qlfile edit). Setting
-# QUICKLISP_HOME=.qlot/ is what actually activates that pinned set --
-# `.qlot/` sitting in the directory does nothing on its own, ros doesn't
-# auto-detect it. All recipes below export it for that reason. Run
-# `qlot add <dep>` (or `qlot install` after editing qlfile) once, before
-# any of these targets; it's not a dependency of them since it's a
-# one-time / on-demand step, not something that should silently re-run on
-# every build.
-export QUICKLISP_HOME := .qlot/
-
 # `test` runs the post-deploy TODO-APP/E2E suite against a LIVE deploy --
 # it is not a build-time unit test, and has nothing to validate without a
 # target host that's already been deployed to. It's excluded from `all`

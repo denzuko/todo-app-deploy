@@ -37,7 +37,7 @@ exec ros -Q -- $0 "$@"
 (defparameter *data-mountpoint* "/srv/todo-app"
   "PostgreSQL data directory, backed by *DATA-DATASET*.")
 (defparameter *secrets-path* "/var/lib/todo-app/.env/pgpass"
-  "Generated once and left alone on redeploy — the postgres data volume's
+  "Generated once and left alone on redeploy. The postgres data volume's
    password can't be rotated out from under it on every run.")
 (defparameter *haproxy-vhost-name* "todo-app")
 (defparameter *haproxy-fqdn* "todo.dapla.net")
@@ -45,12 +45,12 @@ exec ros -Q -- $0 "$@"
 (defun write-file-string (path content)
   "Write CONTENT to PATH, creating parent directories as needed. Consfigurator
    is a deployment tool you run against a host, not a library to link into a
-   general-purpose script — it doesn't belong in this image, and its native
+   general-purpose script. It doesn't belong in this image, and its native
    groveled bindings (ACL, POSIX capabilities) are exactly the kind of
    fragile system-header dependency that got it rejected from dps-meta for
    the same reason. The properties below are the same idempotent,
    sequentially-applied checks Consfigurator's DSL would express, just as
-   plain functions calling UIOP directly — which is what they were already
+   plain functions calling UIOP directly, which is what they were already
    doing underneath every `:apply` clause."
   (ensure-directories-exist path)
   (with-open-file (out path :direction :output
@@ -61,7 +61,7 @@ exec ros -Q -- $0 "$@"
 (defun zfs-dataset-mounted (dataset mountpoint)
   "Create DATASET with the given MOUNTPOINT if it doesn't already exist.
    UIOP:RUN-PROGRAM's exit code is its third return value when :OUTPUT is
-   NIL, not its primary one — NTH-VALUE 2 here, not a bare ZEROP."
+   NIL, not its primary one: NTH-VALUE 2 here, not a bare ZEROP."
   (unless (zerop (nth-value 2
                    (uiop:run-program
                     (format nil "zfs list -H -o name ~A" dataset)
@@ -103,8 +103,8 @@ exec ros -Q -- $0 "$@"
 (defun todo-app-db-secret ()
   "Generate the postgres password once via `openssl rand -hex 32` and persist
    it under the ZFS-backed service account home (mode 0600), rather than the
-   /dev/shm mktemp namespace used for one-shot bootstrap secrets elsewhere —
-   this one has to survive container restarts across the data volume's
+   /dev/shm mktemp namespace used for one-shot bootstrap secrets elsewhere.
+   This one has to survive container restarts across the data volume's
    lifetime."
   (ensure-directories-exist (format nil "~A/.env/" *home-mountpoint*))
   (unless (uiop:file-exists-p *secrets-path*)
@@ -130,14 +130,14 @@ exec ros -Q -- $0 "$@"
      :output t)))
 
 (defun cinix-write-string (sections)
-  "Serialize an alist of (section-name . ((key . value) ...)) — the same
-   shape cl-inix:read produces from an INI file — into INI/systemd unit-file
+  "Serialize an alist of (section-name . ((key . value) ...)), the same
+   shape cl-inix:read produces from an INI file, into INI/systemd unit-file
    text. cl-inix itself is read-only (dps-meta uses it in-process to parse
    .git/config in place of a uiop:run-program fork), so this is the write-side
    counterpart, playing the role for the quadlet AST that SXQL's `yield`
    plays for SQL and Spinneret's `with-html-string` plays for HTML. Keys may
-   repeat within a section — e.g. multiple Environment= lines — since each
-   section is an ordered list of conses, not a hash."
+   repeat within a section (multiple Environment= lines, for instance) since
+   each section is an ordered list of conses, not a hash."
   (with-output-to-string (s)
     (dolist (section sections)
       (format s "[~A]~%" (car section))
@@ -217,19 +217,20 @@ backend ~A_be
 
 (defun generate-index-html-template ()
   "Generate the index page shell via Spinneret. The `%s` inside the todo-list
-   is PostgreSQL's own format() substitution syntax, not Lisp's `~A` — this
+   is PostgreSQL's own format() substitution syntax, not Lisp's `~A`. This
    string is only ever read by PostgreSQL's format() at request time, after
    Lisp's own format has already finished substituting the whole template
    into the SQL body. The Add button's Alpine `:disabled=\"expr\"` binding
-   needs the attribute name pipe-quoted as :|:disabled| — Spinneret treats
+   needs the attribute name pipe-quoted as :|:disabled|. Spinneret treats
    the plain keyword :DISABLED as HTML5's native boolean attribute of the
    same name, and a value passed there collapses to a bare `disabled`,
    silently dropping the whole Alpine binding with no warning that it
    happened. SPINNERET:*ALWAYS-QUOTE* is set at the top of this file, before
-   this function is compiled, which is what keeps that attribute's value —
-   and every attribute value in GENERATE-RENDER-TODO-HTML-TEMPLATE below —
-   properly quoted even though the literal placeholder text Spinneret sees
-   at generation time never itself contains whitespace."
+   this function is compiled, and that setting is what keeps that
+   attribute's value, and every attribute value in
+   GENERATE-RENDER-TODO-HTML-TEMPLATE below, properly quoted even though the
+   literal placeholder text Spinneret sees at generation time never itself
+   contains whitespace."
   (spinneret:with-html-string
     (:doctype)
     (:html :lang "en"
@@ -267,13 +268,13 @@ backend ~A_be
    express declaratively: every other attribute here is a plain string
    value, always quoted correctly thanks to *ALWAYS-QUOTE*, but `checked`
    is an HTML5 boolean attribute whose presence Spinneret can only decide
-   from a Lisp-level true/false value at generation time — and whether a
+   from a Lisp-level true/false value at generation time, and whether a
    given row is done isn't known until PostgreSQL's format() resolves it at
    request time. That's a genuine boundary between the two templating
    systems rather than anything Spinneret does wrong, so that one input
    stays a hand-written :RAW placeholder; every other element here is
-   ordinary Spinneret markup. Placeholder order: li id, checked, hx-patch
-   id, hx-target id, span class, span content, hx-delete id, hx-target id —
+   ordinary Spinneret markup. Placeholder order is li id, checked, hx-patch
+   id, hx-target id, span class, span content, hx-delete id, hx-target id:
    eight `%s` total, matching the eight arguments render_todo passes to
    PostgreSQL's format()."
   (spinneret:with-html-string
@@ -295,7 +296,7 @@ backend ~A_be
 
 (defun sql-create-schema (name)
   "Emit a CREATE SCHEMA IF NOT EXISTS statement. SXQL has no schema-DDL
-   vocabulary at all — CREATE-SCHEMA isn't a function it exports — so this
+   vocabulary at all (CREATE-SCHEMA isn't a function it exports), so this
    is the same kind of small structured builder as SQL-CREATE-ROLE and
    SQL-GRANT below it, not a hand-typed literal wrapped in an unrelated
    function name."
@@ -305,7 +306,7 @@ backend ~A_be
   "Emit an idempotent domain-creation statement, for the same reason
    SQL-CREATE-ROLE needs one: PostgreSQL's CREATE DOMAIN has no IF NOT
    EXISTS clause, and CREATE SCHEMA IF NOT EXISTS leaves an existing
-   schema's contents — including this domain — untouched on redeploy, so
+   schema's contents (including this domain) untouched on redeploy, so
    a bare CREATE DOMAIN fails with a duplicate-object error on every
    redeploy after the first. Domains are stored as types, so the existence
    check joins pg_type to pg_namespace rather than querying a dedicated
@@ -316,7 +317,7 @@ backend ~A_be
 (defun sql-create-role (name)
   "Emit an idempotent role-creation statement. Unlike CREATE SCHEMA and
    CREATE TABLE, PostgreSQL's CREATE ROLE has no IF NOT EXISTS clause at
-   all, and roles live at the cluster level, not the database level — a
+   all, and roles live at the cluster level, not the database level: a
    dropped-and-recreated database doesn't drop the role with it. Wrapping
    it in a DO block that checks pg_roles first is the standard idiom for
    making it safe to run on every deploy, which this migration is designed
@@ -455,15 +456,15 @@ $$ LANGUAGE plpgsql VOLATILE"
    reapplication, so the down side is a documented no-op rather than a
    destructive DROP SCHEMA that would take user data with it. Trading the
    local-path provider for this one drops the file a SAST/attestation step
-   could scan and sign — nothing here writes the generated SQL to disk."
+   could scan and sign; nothing here writes the generated SQL to disk."
   (make-instance 'ram-migration
                  :id id :description description :kind :sql :applied nil
                  :up-content up-sql :down-content down-sql))
 
 (defun next-migration-id (driver)
   "A monotonic id derived from DRIVER's own applied-migration history rather
-   than the clock. A 14-digit YYYYMMDDHHMMSS timestamp — the id scheme
-   CL-MIGRATUM.UTIL:MAKE-MIGRATION-ID itself uses — collides when two
+   than the clock. A 14-digit YYYYMMDDHHMMSS timestamp, the id scheme
+   CL-MIGRATUM.UTIL:MAKE-MIGRATION-ID itself uses, collides when two
    migrations are built inside the same wall-clock second, which a fast
    redeploy (or two e2e runs back to back) can genuinely do; reading the
    driver's own latest id back and incrementing it can't collide regardless
@@ -472,8 +473,8 @@ $$ LANGUAGE plpgsql VOLATILE"
     (if latest (1+ (cl-migratum.core:migration-id latest)) 1)))
 
 (defun run-migrations (database user password host)
-  "Build a RAM-PROVIDER holding one RAM-MIGRATION — the current
-   BUILD-MIGRATION-SQL output — and apply it via cl-migratum's real
+  "Build a RAM-PROVIDER holding one RAM-MIGRATION, the current
+   BUILD-MIGRATION-SQL output, and apply it via cl-migratum's real
    postmodern-postgresql driver. cl-migratum.driver.pg, assumed for a while
    early on, never existed; the real system is
    CL-MIGRATUM.DRIVER.POSTMODERN-POSTGRESQL. A short-lived probe driver
@@ -541,7 +542,7 @@ $$ LANGUAGE plpgsql VOLATILE"
    straight to the browser, styled with Tailwind and wired up with HTMX and
    Alpine.js, running on rootless Podman quadlets behind HAProxy.
 
-   The interesting part isn't the app — it's that almost none of what gets
+   The interesting part isn't the app. It's that almost none of what gets
    written to disk or sent to the database is a hand-typed string. The
    quadlet units, the SQL schema and grants, and the HTML the database
    itself serves are all built from small in-memory representations and
@@ -552,13 +553,13 @@ $$ LANGUAGE plpgsql VOLATILE"
    the quadlet units. The idea is the same one SXQL and Spinneret already
    follow: build a structure, then render it, instead of concatenating
    text by hand. The generated SQL itself goes through the same discipline
-   one level further out: RUN-MIGRATIONS writes it to a timestamped file
-   pair before applying it, rather than running a string straight from
-   memory, using cl-migratum for real rather than as a name attached to a
-   driver that never existed.
+   one level further out: RUN-MIGRATIONS wraps it in a RAM-MIGRATION served
+   by a RAM-PROVIDER and applies it through cl-migratum's real
+   postmodern-postgresql driver, using cl-migratum for real rather than as
+   a name attached to a driver that never existed.
 
-   System state — ZFS datasets, the service account, quadlet files, the
-   HAProxy vhost — is asserted with plain idempotent functions calling
+   System state (ZFS datasets, the service account, quadlet files, the
+   HAProxy vhost) is asserted with plain idempotent functions calling
    UIOP directly, not a deployment tool linked into this image. Consfigurator
    is meant to be run against a host, not embedded as a library; its
    groveled native bindings are exactly the fragile dependency this stays
@@ -593,8 +594,8 @@ $$ LANGUAGE plpgsql VOLATILE"
   (todo-app-images-pulled function))
 
 (defsection @quadlets (:title "Quadlet units via cinix")
-  "The three systemd quadlet units — the Postgres container, the PostgREST
-   container, and the network they share — are each built as a small alist
+  "The three systemd quadlet units (the Postgres container, the PostgREST
+   container, and the network they share) are each built as a small alist
    of sections and key/value pairs, the same shape cl-inix:read hands back
    when it parses an INI file. CINIX-WRITE-STRING turns that shape back
    into text. Nothing here hand-assembles a unit file as one long string."
@@ -612,20 +613,20 @@ $$ LANGUAGE plpgsql VOLATILE"
    end. Table and schema creation goes through SXQL. GRANT and CREATE ROLE
    don't have SXQL support, so SQL-GRANT and SQL-CREATE-ROLE fill that gap
    the same way CINIX-WRITE-STRING fills it for quadlets. The two HTML
-   fragments PL/pgSQL serves back to the browser — the page shell and the
-   per-item row — are Spinneret templates rather than string
+   fragments PL/pgSQL serves back to the browser (the page shell and the
+   per-item row) are Spinneret templates rather than string
    concatenation; the one exception is the to-do checkbox's `checked`
    attribute, which has to stay a raw placeholder because only Postgres,
    not Spinneret, knows at request time whether a given row is done.
 
-   RUN-MIGRATIONS doesn't execute BUILD-MIGRATION-SQL's output directly —
-   it wraps that string in a RAM-MIGRATION served by a RAM-PROVIDER, and
+   RUN-MIGRATIONS doesn't execute BUILD-MIGRATION-SQL's output directly.
+   It wraps that string in a RAM-MIGRATION served by a RAM-PROVIDER, and
    only then does cl-migratum's real postmodern-postgresql driver apply it.
    Nothing lands on disk first; the tradeoff against a file-based provider
    is that there's no discrete up/down file left behind for a SAST or
    attestation step to later scan and sign, only cl-migratum's own applied-
    migration row in the database. NEXT-MIGRATION-ID exists because the
-   obvious id source — a 14-digit timestamp — collides when two migrations
+   obvious id source, a 14-digit timestamp, collides when two migrations
    get built in the same wall-clock second, which a fast redeploy can
    genuinely do; deriving the id from the driver's own history instead
    can't collide regardless of timing."
@@ -776,8 +777,8 @@ $$ LANGUAGE plpgsql VOLATILE"
 (defsection @todo-app-e2e (:title "todo-app-deploy e2e")
   "Post-deploy validation for the stack TODO-APP-DEPLOY:DEPLOY brings up,
    written against the deployed result rather than against its own
-   generator functions — those get their own pre-deploy FiveAM specs
-   separately. This suite shells out the same way BATS would for the
+   generator functions (those get their own pre-deploy FiveAM specs
+   separately). This suite shells out the same way BATS would for the
    systemd/ZFS/file-permission checks, but the runner, the assertions, and
    the HTTP/DB checks are plain Common Lisp: DEXADOR against the live
    HAProxy-fronted URL, POSTMODERN against the live schema, no bats
@@ -794,13 +795,13 @@ $$ LANGUAGE plpgsql VOLATILE"
 (in-package :cl-user)
 
 (defun main (&rest argv)
-  "Entry point for `./todo-app-deploy.lisp [e2e]`. Roswell calls this
-   automatically after loading the script — it isn't invoked explicitly
-   here — so this has to be CL-USER::MAIN specifically, taking &REST ARGV,
-   per Roswell's own script convention; TODO-APP-DEPLOY:DEPLOY underneath
+  "Entry point for `./todo-app-deploy.ros [e2e]`. Roswell calls this
+   automatically after loading the script; it isn't invoked explicitly
+   here, so this has to be CL-USER::MAIN specifically, taking &REST ARGV,
+   per Roswell's own script convention. TODO-APP-DEPLOY:DEPLOY underneath
    is a distinct, differently-shaped, differently-named function this
-   dispatches to — differently-named so there's only ever one thing in
-   this file called MAIN. With no arguments, deploys the stack. With
+   dispatches to (differently-named so there's only ever one thing in
+   this file called MAIN). With no arguments, deploys the stack. With
    `e2e`, runs TODO-APP-DEPLOY.E2E:RUN-E2E against whatever's already
    deployed instead."
   (unless (member "e2e" argv :test #'string=)

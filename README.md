@@ -127,8 +127,10 @@ BSD 3-Clause. See [LICENSE](LICENSE).
 ## Build, test, dist
 
 ```sh
-ros install qlot     # once, to get the qlot CLI
-qlot add <dep>        # adds a dependency to qlfile and pins it in
+ros init myapp        # not needed here (this repo already exists), but
+                      # this is the standard project-start sequence
+ros install qlot      # once, to get the qlot CLI
+qlot add <dep>         # adds a dependency to qlfile and pins it in
                       # qlfile.lock; already done for everything this
                       # repo needs, only relevant when adding a new one
 make                  # doc + todo-app-deploy.tgz
@@ -139,15 +141,11 @@ make clean            # remove build/
 ```
 
 `qlfile.lock` pins every dependency (109, transitively) to the exact
-release `qlot add`/`qlot install` resolved. `.qlot/` sitting in the
-directory does nothing on its own; `QUICKLISP_HOME=.qlot/` is what
-actually activates the pinned set, and the Makefile exports it for every
-recipe. `ros dump executable` (verified: it builds and runs correctly
-against this project's full dependency tree, Consfigurator's native
-bindings included) and the e2e run both use the pinned dependency set
-this way rather than whatever's in the local Quicklisp dist that day.
-`todo-app-deploy.ros` and `docs.ros` still run fine directly (plain `./
-todo-app-deploy.ros`) without `QUICKLISP_HOME` set; qlot only matters for
+release `qlot add`/`qlot install` resolved. `ros dump executable`
+(verified: it builds and runs correctly against this project's full
+dependency tree, Consfigurator's native bindings included) works
+directly, no extra setup at invocation time beyond having run `qlot add`
+against the project once.
 reproducible builds and CI, not for interactive use.
 
 ## Upstream

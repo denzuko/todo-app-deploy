@@ -1,50 +1,60 @@
 # Upstream candidates
 
 Most of [FINDINGS.md](FINDINGS.md) is this script being wrong about
-libraries that were already behaving correctly and as designed, not bugs in
-the libraries themselves. Worth being precise about that distinction before
-forking anything or opening issues against someone else's project.
+libraries that were already behaving correctly and as designed. None of
+that is a library bug, and it's worth being precise about the distinction
+before forking anything or opening an issue against someone else's project.
 
-| # | Finding | Whose bug | Action |
-|---|---|---|---|
-| 1 | `cl-migratum-driver-pg` doesn't exist | this script | none, fixed locally |
-| 2 | `sxql:create-schema`/`make-sql-keyword` don't exist | this script | possible feature request to SXQL for schema DDL, not a bug report |
-| 3 | SXQL `:default nil` means "omit," not "false" | this script (arguably a documentation gap in SXQL) | maybe a docs PR; `:default` semantics aren't obvious from the README |
-| 4 | Roswell auto-calls `main` after loading a script | this script's wrong assumption | none, Roswell is correct and documented, I just hadn't read it closely enough |
-| 5 | `uiop:run-program` exit code is the third value | this script | none, UIOP is correct, worth a note in whatever internal style guide covers this pattern |
-| 6 | Spinneret's `*always-quote*` fixes the quoting problem but is undiscoverable, and its `LET`-doesn't-work compile-time behavior is undocumented | **candidate docs PR, not a bug report** | Spinneret already solved this; the actual gap is that `*always-quote*` isn't mentioned in the README at all, and its one-line docstring doesn't warn that binding it dynamically around a call site silently does nothing. A documentation PR (README section plus expanded docstring) is a much better-scoped contribution than an issue implying Spinneret's behavior is wrong |
-| 7 | `CREATE ROLE` not idempotent | this script's schema | none, not a library issue; Postgres has never had `CREATE ROLE IF NOT EXISTS` in the general case by design |
-| 8 | `CREATE DOMAIN` not idempotent | this script's schema | none, same reasoning as #7 |
-| 9 | Ambiguous `id` column reference | this script's schema | none, correct PL/pgSQL behavior, this script's naming mistake |
-| 10 | Trailing empty statement | this script | none |
-| — | Consfigurator `CFFI-GROVEL` failure on ACL/capabilities headers | environment, not a bug | not upstream-worthy as filed; could be a docs PR noting the native dependency on `libacl1-dev`/`libcap-dev` isn't mentioned anywhere in Consfigurator's own install docs, which is genuinely useful to know before reaching for it |
+Eight of the ten findings settle that way outright. `cl-migratum-driver-pg`
+never existed; the real driver constructor was there all along. SXQL has no
+schema-DDL vocabulary and never claimed to. Roswell's automatic call to
+`main` is documented behavior, not a surprise the framework owes an
+apology for. `uiop:run-program` returns its exit code as the third value by
+design. `CREATE ROLE` and `CREATE DOMAIN` have no `IF NOT EXISTS` clause
+because PostgreSQL doesn't offer one for either, on purpose. The ambiguous
+`id` column reference and the trailing empty migration statement are both
+this script's own mistakes in SQL it generated itself. None of the eight
+is upstream-worthy; each is fixed locally, and FINDINGS.md covers the fix.
 
-## Net: two forkable items, both documentation patches, neither a code change
+Two findings land differently, and both turn out to be documentation gaps
+rather than code bugs.
 
-Both real bugs found in third-party code turned out, on closer reading of
-the actual source, not to be bugs at all. Consfigurator's grovel dependency
-is a legitimate (if undocumented) system requirement, and Spinneret already
-ships the fix for the quoting issue. That distinction matters for how these
-get filed: neither is "please change this behavior," both are "please tell
-people about this before they lose an hour to it."
+Spinneret's `*always-quote*` already does the right thing: it exists
+specifically to force attribute quoting when Spinneret can't infer it from
+the literal text it sees at compile time. The problem is that nothing says
+so. The variable isn't mentioned in the README, and its one-line docstring
+gives no hint that it has to be set with `setf` before the affected code
+compiles, since a `let` around the call site has no effect. That's a real
+trap for the next person who hits the same wrong assumption this script
+did, and it's a much better-scoped contribution than an issue implying
+Spinneret's behavior is wrong: Spinneret solved the problem correctly, it
+just never told anyone the solution existed.
 
-- **Consfigurator**: `git.spwhitton.name/consfigurator` does not accept
-  GitHub pull requests (see its `CONTRIBUTING.rst`); patches go to the
-  `sgo-software-discuss` mailing list via `git-send-email`, or as a
-  publicly-hosted branch with an email asking for a merge. Patch prepared
-  and committed on `doc/native-dependency-note`, `git format-patch` output
-  and a git bundle both in `upstream-patches/consfigurator/`. Ready to send
-  with `git send-email --to=spwhitton@spwhitton.name
-  --subject-prefix="PATCH consfigurator"
-  upstream-patches/consfigurator/*.patch`, or to push as a fork branch and
-  email asking for a merge instead. Needs an account with the right
-  credentials to actually send/push.
-- **Spinneret**: a normal GitHub project, no `CONTRIBUTING.rst` found,
-  ordinary PR workflow. Patch prepared and committed on
-  `doc/always-quote-attribute-quoting` against a fresh clone of
-  `ruricolist/spinneret`, verified by loading the edited checkout through
-  ASDF and confirming both the docstring and the behavior it describes
-  still work. `git format-patch` output and a git bundle both in
-  `upstream-patches/spinneret/`. Ready to push to a fork and open as a PR.
+Consfigurator's `CFFI-GROVEL` failure on `libacl1-dev` and `libcap-dev`
+is the same shape of gap. Loading Consfigurator outside its packaged
+`.deb`, whether through Quicklisp or straight from git, needs both native
+headers, and neither Installation.rst nor the build output says so before
+the grovel step fails. The environment is doing exactly what it's supposed
+to; the dependency is just undocumented outside the packaging that already
+handles it.
+
+Both patches are prepared and staged in this repo, ready to send rather
+than merely proposed.
+
+`upstream-patches/consfigurator/` holds a `git format-patch` and a git
+bundle against `doc/native-dependency-note`, adding a short section to
+`installation.rst` naming both packages. Consfigurator doesn't take GitHub
+pull requests (its `CONTRIBUTING.rst` says so directly); the patch goes to
+the `sgo-software-discuss` mailing list via `git send-email`, or as a
+publicly hosted branch with a merge request by email. Sending or pushing
+either way needs an account with the right credentials, which this
+sandbox doesn't carry.
+
+`upstream-patches/spinneret/` holds the same pairing against
+`doc/always-quote-attribute-quoting`: a README section on attribute
+quoting, and an expanded `*always-quote*` docstring carrying the same
+warning inline. This one's a normal GitHub project with the ordinary PR
+workflow, verified by loading the edited checkout through ASDF and
+confirming both the docstring and the behavior it describes hold up.
 
 Everything else in this repo is homegrown and stays homegrown.

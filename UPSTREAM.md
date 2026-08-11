@@ -5,7 +5,7 @@ libraries that were already behaving correctly and as designed. None of
 that is a library bug, and it's worth being precise about the distinction
 before forking anything or opening an issue against someone else's project.
 
-Eight of the ten findings settle that way outright. `cl-migratum-driver-pg`
+Nine of the eleven findings settle that way outright. `cl-migratum-driver-pg`
 never existed; the real driver constructor was there all along. SXQL has no
 schema-DDL vocabulary and never claimed to. Roswell's automatic call to
 `main` is documented behavior, not a surprise the framework owes an
@@ -13,8 +13,13 @@ apology for. `uiop:run-program` returns its exit code as the third value by
 design. `CREATE ROLE` and `CREATE DOMAIN` have no `IF NOT EXISTS` clause
 because PostgreSQL doesn't offer one for either, on purpose. The ambiguous
 `id` column reference and the trailing empty migration statement are both
-this script's own mistakes in SQL it generated itself. None of the eight
-is upstream-worthy; each is fixed locally, and FINDINGS.md covers the fix.
+this script's own mistakes in SQL it generated itself. Consfigurator's
+`WITH-DEPLOYMENT-REPORT` returning normally regardless of failure is the
+same shape of non-bug: report-then-continue is a legitimate design choice
+for a configuration-management tool, and it's this script's job, not
+Consfigurator's, to decide it wants fail-fast semantics and wrap the call
+accordingly. None of the nine is upstream-worthy; each is fixed locally,
+and FINDINGS.md covers the fix.
 
 Two findings land differently, and both turn out to be documentation gaps
 rather than code bugs.

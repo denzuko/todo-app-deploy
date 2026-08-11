@@ -1,10 +1,10 @@
 # Findings
 
-Ten real bugs, found by actually installing Roswell and standing up a live
-PostgreSQL instance rather than by reading the code. None of these showed up
-in review. Several are the kind of thing that would pass a code review
-cleanly and then break in production on the second deploy. Grouped by cause,
-in the order they surfaced.
+Eleven real bugs, found by actually installing Roswell and standing up a
+live PostgreSQL instance rather than by reading the code. None of these
+showed up in review. Several are the kind of thing that would pass a code
+review cleanly and then break in production on the second deploy. Grouped
+by cause, in the order they surfaced.
 
 ## Wrong or fictional library APIs
 
@@ -161,17 +161,41 @@ trailing empty piece, sent to Postgres as an empty query. Harmless (a
 `WARNING`, not an error), but worth cleaning up. Fixed by moving the
 separator inside a `~^` directive so it only prints between elements.
 
-## What was actually a fictional Consfigurator dependency
+## Eleventh: Consfigurator's own failure reporting doesn't reach the caller
 
-Separately from the ten items above: the script originally used
-Consfigurator (`defhost`/`defproperty`/`deploy`) for the provisioning layer.
-Loading it in a clean environment reproduced a `CFFI-GROVEL` failure on its
-ACL and POSIX-capabilities native bindings, the exact failure mode this
-org's `dps-meta` project had already hit and walked away from twice.
-Installing the first missing header (`libacl1-dev`) just uncovered the next
-one (`libcap-dev`), which is the shape of problem that doesn't end at one
-`apt-get install`. Consfigurator was dropped from the deploy path entirely.
-The properties it declared were already just wrapping `uiop:run-program`
-calls underneath, so they're now plain functions calling `uiop:run-program`
-directly, with no change in behavior and one fewer fragile system-level
-dependency.
+**11. `WITH-DEPLOYMENT-REPORT`, which every `defhost`-generated deploy
+function is wrapped in, prints a pass/fail report and then returns
+normally regardless of whether anything failed.**
+Calling `(todo-app-host)` after a property failed still returns to the
+caller as if nothing were wrong. The actual failure signal is the
+(unexported) `consfigurator::skipped-properties` condition each failed
+property raises internally; `with-deployment-report`'s own `handler-bind`
+catches it to build the printed report, but since that handler never
+transfers control, the condition keeps propagating past it. Wrapping the
+call to `(todo-app-host)` in another `handler-bind` for the same condition
+catches it too, letting `deploy-app` refuse to proceed to database
+migrations when provisioning didn't fully succeed, instead of the
+original behavior: print a failure report, then attempt migrations
+against a host that was silently left half-provisioned. Found by
+deliberately running the script somewhere `zfs` and `machinectl` don't
+exist and watching it try to read a secrets file that provisioning never
+got far enough to write.
+
+## Consfigurator: a real dependency now, not a fictional one
+
+The script originally used Consfigurator (`defhost`/`defprop`/`deploy`)
+for the provisioning layer. Loading it in a clean environment reproduced a
+`CFFI-GROVEL` failure on its ACL and POSIX-capabilities native bindings,
+the same failure mode this org's `dps-meta` project had already hit.
+Installing both missing headers (`libacl1-dev` and `libcap-dev`) resolved
+it outright; there was no further cascade of missing headers, and
+Consfigurator now loads clean and drives the actual provisioning layer:
+`todo-app-host`, a `defhost` deployed over a `:local` connection, applies
+custom properties (`zfs-dataset-mounted`, `rootless-service-account`,
+`db-secret-file`, `images-pulled`, `quadlets-activated`) alongside
+Consfigurator's own built-ins (`file:has-content`, `systemd:
+lingering-enabled`, `service:reloaded` wrapped in `on-change`) in
+dependency order. See UPSTREAM.md for the doc patch this generated: the
+native-header requirement isn't documented anywhere in Consfigurator's own
+install instructions, which is exactly what cost the earlier session the
+time this one didn't have to spend.

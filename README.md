@@ -17,7 +17,9 @@ a live PostgreSQL instance, not by code review alone.
 
 - Two ZFS datasets, a rootless systemd-user service account with linger
   enabled, and a generated database password persisted under that account's
-  home.
+  home, each provisioned as a Consfigurator property (custom where no
+  built-in fits, Consfigurator's own where one does) rather than a
+  hand-rolled shell-out.
 - Three Podman quadlet units (Postgres, PostgREST, a shared network),
   serialized from an in-memory `(section . ((key . value) ...))`
   representation rather than a heredoc. It's the same shape `cl-inix:read`
@@ -39,6 +41,10 @@ a live PostgreSQL instance, not by code review alone.
 ## Requirements
 
 - [Roswell](https://github.com/roswell/roswell)
+- `libacl1-dev` and `libcap-dev` on the machine that loads this script.
+  Consfigurator's `CFFI-GROVEL` step needs both native headers to build;
+  neither is documented as a Consfigurator dependency anywhere upstream
+  (see UPSTREAM.md), so it's called out here explicitly.
 - A target host with `zfs`, `podman` (rootless, quadlet-capable systemd),
   `haproxy`, and `machinectl`. This is written for a specific home-lab
   style stack, not a generic cloud target.
@@ -53,8 +59,12 @@ consfigurator sxql spinneret cl-inix 40ants-doc fiveam dexador postmodern
 cl-migratum cl-migratum.driver.postmodern-postgresql
 ```
 
-(`consfigurator` is listed here for historical reasons. See FINDINGS.md; it
-was dropped from the actual deploy path.)
+Consfigurator drives the actual provisioning: ZFS datasets, the service
+account, the generated secret, pulled images, the quadlet unit files, and
+the HAProxy vhost are all Consfigurator properties applied to a single
+`defhost` over a `:local` connection. See FINDINGS.md for why it wasn't
+loading at first, and @provisioning/@quadlets in the script's own
+40ants-doc sections for how the properties are actually built.
 
 ## Usage
 

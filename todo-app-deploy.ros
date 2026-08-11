@@ -6,8 +6,8 @@ exec ros -Q -- $0 "$@"
 
 (in-package :cl-user)
 
-(let ((needed '(:sxql :spinneret :cl-inix :40ants-doc :fiveam :dexador
-                :postmodern :cl-migratum
+(let ((needed '(:consfigurator :sxql :spinneret :cl-inix :40ants-doc :fiveam
+                :dexador :postmodern :cl-migratum
                 :cl-migratum.driver.postmodern-postgresql)))
   (unless (every #'ql-dist:find-system (mapcar #'string-downcase needed))
     (ql-dist:install-dist "http://dist.ultralisp.org/" :prompt nil))
@@ -17,8 +17,14 @@ exec ros -Q -- $0 "$@"
   (:use :cl :sxql)
   (:import-from :spinneret :with-html-string)
   (:import-from :40ants-doc :defsection)
+  (:import-from :consfigurator
+                :defprop :defhost :deploy :run :mrun :stripln
+                :remote-exists-p :write-remote-file :on-change)
+  (:import-from :consfigurator.property.file :has-content)
+  (:import-from :consfigurator.property.systemd :lingering-enabled)
+  (:import-from :consfigurator.property.service :reloaded)
   (:export :*service-user* :*home-mountpoint* :*secrets-path* :*haproxy-fqdn*
-           :*home-dataset* :*data-dataset* :deploy))
+           :*home-dataset* :*data-dataset* :deploy-app))
 
 (in-package :todo-app-deploy)
 
@@ -42,92 +48,56 @@ exec ros -Q -- $0 "$@"
 (defparameter *haproxy-vhost-name* "todo-app")
 (defparameter *haproxy-fqdn* "todo.dapla.net")
 
-(defun write-file-string (path content)
-  "Write CONTENT to PATH, creating parent directories as needed. Consfigurator
-   is a deployment tool you run against a host, not a library to link into a
-   general-purpose script. It doesn't belong in this image, and its native
-   groveled bindings (ACL, POSIX capabilities) are exactly the kind of
-   fragile system-header dependency that got it rejected from dps-meta for
-   the same reason. The properties below are the same idempotent,
-   sequentially-applied checks Consfigurator's DSL would express, just as
-   plain functions calling UIOP directly, which is what they were already
-   doing underneath every `:apply` clause."
-  (ensure-directories-exist path)
-  (with-open-file (out path :direction :output
-                            :if-exists :supersede
-                            :if-does-not-exist :create)
-    (write-string content out)))
+(defprop zfs-dataset-mounted :posix (dataset mountpoint)
+  "Ensure DATASET exists as a ZFS dataset mounted at MOUNTPOINT."
+  (:desc (format nil "ZFS dataset ~A mounted at ~A" dataset mountpoint))
+  (:check (zerop (mrun :for-exit
+                        (format nil "zfs list -H -o name ~A" dataset))))
+  (:apply (mrun (format nil "zfs create -o mountpoint=~A ~A"
+                         mountpoint dataset))))
 
-(defun zfs-dataset-mounted (dataset mountpoint)
-  "Create DATASET with the given MOUNTPOINT if it doesn't already exist.
-   UIOP:RUN-PROGRAM's exit code is its third return value when :OUTPUT is
-   NIL, not its primary one: NTH-VALUE 2 here, not a bare ZEROP."
-  (unless (zerop (nth-value 2
-                   (uiop:run-program
-                    (format nil "zfs list -H -o name ~A" dataset)
-                    :output nil :error-output nil :ignore-error-status t)))
-    (uiop:run-program (format nil "zfs create -o mountpoint=~A ~A"
-                               mountpoint dataset)
-                       :output t)))
+(defprop rootless-service-account :posix (username home)
+  "Ensure a system account USERNAME exists with home directory HOME,
+   without creating that directory.
+   CONSFIGURATOR.PROPERTY.USER:HAS-ACCOUNT always passes useradd -m; this
+   account's home is ZFS-backed and provisioned by ZFS-DATASET-MOUNTED
+   earlier in the host's property list, so -m would collide with a
+   directory that's already there."
+  (:desc (format nil "System account ~A at ~A" username home))
+  (:check (zerop (mrun :for-exit "id" username)))
+  (:apply (mrun "useradd" "--system" "--no-create-home"
+                "--home-dir" home username)))
 
-(defun todo-app-home-dataset ()
-  "Provision *HOME-DATASET*, ahead of the service account that will live on it."
-  (zfs-dataset-mounted *home-dataset* *home-mountpoint*))
+(defprop db-secret-file :posix (path user)
+  "Generate the postgres password once via `openssl rand -hex 32` and
+   persist it at PATH, mode 0600, owned by USER. Left alone on redeploy;
+   the postgres data volume's password can't be rotated out from under it
+   on every run."
+  (:desc (format nil "DB secret at ~A" path))
+  (:check (remote-exists-p path))
+  (:apply
+   (let ((pass (stripln (mrun "openssl" "rand" "-hex" "32"))))
+     (write-remote-file
+      path
+      (format nil "POSTGRES_PASSWORD=~A~%PGRST_DB_URI=postgres://postgres:~A@todo-postgres:5432/tododb~%"
+              pass pass)
+      :mode #o600)
+     (mrun "chown" (format nil "~A:~A" user user) path))))
 
-(defun todo-app-data-dataset ()
-  "Provision *DATA-DATASET* for the postgres container's data directory."
-  (zfs-dataset-mounted *data-dataset* *data-mountpoint*))
-
-(defun todo-app-service-account ()
-  "Create the rootless *SERVICE-USER* system account with its home on the
-   ZFS dataset, and enable + verify systemd linger so its user session
-   survives without an active login."
-  (unless (zerop (nth-value 2
-                   (uiop:run-program
-                    (format nil "id ~A" *service-user*)
-                    :output nil :error-output nil :ignore-error-status t)))
-    (uiop:run-program
-     (format nil "useradd --system --no-create-home --home-dir ~A ~A"
-             *home-mountpoint* *service-user*)
-     :output t))
-  (uiop:run-program (format nil "loginctl enable-linger ~A" *service-user*)
-                     :output t)
-  (let ((linger (uiop:run-program
-                 (format nil "loginctl show-user ~A --property=Linger"
-                         *service-user*)
-                 :output '(:string :stripped t))))
-    (unless (string= linger "Linger=yes")
-      (error "Linger not enabled for ~A after loginctl call (got ~S)"
-             *service-user* linger))))
-
-(defun todo-app-db-secret ()
-  "Generate the postgres password once via `openssl rand -hex 32` and persist
-   it under the ZFS-backed service account home (mode 0600), rather than the
-   /dev/shm mktemp namespace used for one-shot bootstrap secrets elsewhere.
-   This one has to survive container restarts across the data volume's
-   lifetime."
-  (ensure-directories-exist (format nil "~A/.env/" *home-mountpoint*))
-  (unless (uiop:file-exists-p *secrets-path*)
-    (let ((pass (string-trim '(#\Newline)
-                  (uiop:run-program "openssl rand -hex 32"
-                                     :output '(:string :stripped t)))))
-      (write-file-string *secrets-path*
-        (format nil "POSTGRES_PASSWORD=~A~%PGRST_DB_URI=postgres://postgres:~A@todo-postgres:5432/tododb~%"
-                pass pass))
-      (uiop:run-program (format nil "chmod 0600 ~A" *secrets-path*) :output t)
-      (uiop:run-program (format nil "chown ~A:~A ~A"
-                                 *service-user* *service-user* *secrets-path*)
-                         :output t))))
-
-(defun todo-app-images-pulled ()
-  "Pull both container images into the rootless store via `machinectl shell`,
-   since the store belongs to the service user's session, not the deploying
-   user's."
-  (dolist (image '("docker.io/library/postgres:16-alpine"
-                    "docker.io/postgrest/postgrest:v12.0.2"))
-    (uiop:run-program
-     (format nil "machinectl shell ~A@ -- podman pull ~A" *service-user* image)
-     :output t)))
+(defprop images-pulled :posix (user &rest images)
+  "Pull IMAGES into USER's rootless Podman image store via `machinectl
+   shell`, since the image store belongs to the service user's own login
+   session, not the connection Consfigurator is deploying through."
+  (:desc (format nil "Podman images pulled for ~A" user))
+  (:check
+   (every (lambda (image)
+            (zerop (mrun :for-exit
+                    (format nil "machinectl shell ~A@ -- podman image exists ~A"
+                            user image))))
+          images))
+  (:apply
+   (dolist (image images)
+     (mrun (format nil "machinectl shell ~A@ -- podman pull ~A" user image)))))
 
 (defun cinix-write-string (sections)
   "Serialize an alist of (section-name . ((key . value) ...)), the same
@@ -180,30 +150,11 @@ exec ros -Q -- $0 "$@"
   "Cinix AST for todo-net.network."
   '(("Network" . (("NetworkName" . "todo-net")))))
 
-(defun postgres-quadlet ()
-  "Write postgres.container from POSTGRES-QUADLET-SECTIONS via cinix-write-string."
-  (let ((unit-file (format nil "~A/.config/containers/systemd/postgres.container"
-                            *home-mountpoint*)))
-    (write-file-string unit-file (cinix-write-string (postgres-quadlet-sections)))))
-
-(defun postgrest-quadlet ()
-  "Write postgrest.container from POSTGREST-QUADLET-SECTIONS via cinix-write-string."
-  (let ((unit-file (format nil "~A/.config/containers/systemd/postgrest.container"
-                            *home-mountpoint*)))
-    (write-file-string unit-file (cinix-write-string (postgrest-quadlet-sections)))))
-
-(defun todo-network-quadlet ()
-  "Write todo-net.network from TODO-NETWORK-QUADLET-SECTIONS via cinix-write-string."
-  (let ((unit-file (format nil "~A/.config/containers/systemd/todo-net.network"
-                            *home-mountpoint*)))
-    (write-file-string unit-file (cinix-write-string (todo-network-quadlet-sections)))))
-
-(defun todo-app-haproxy-vhost ()
-  "Terminate TLS for *HAPROXY-FQDN* and backend to PostgREST on loopback;
-   containers never see the public interface directly."
-  (write-file-string
-   (format nil "/etc/haproxy/conf.d/~A.cfg" *haproxy-vhost-name*)
-   (format nil "frontend ~A_fe
+(defun haproxy-vhost-config ()
+  "HAProxy vhost text terminating TLS for *HAPROXY-FQDN* and backending to
+   PostgREST on loopback; containers never see the public interface
+   directly."
+  (format nil "frontend ~A_fe
   bind *:443 ssl crt /etc/haproxy/certs/dapla_stack.pem
   acl host_~A hdr(host) -i ~A
   use_backend ~A_be if host_~A
@@ -211,9 +162,54 @@ exec ros -Q -- $0 "$@"
 backend ~A_be
   server todo-postgrest 127.0.0.1:3000 check
 "
-           *haproxy-vhost-name* *haproxy-vhost-name* *haproxy-fqdn*
-           *haproxy-vhost-name* *haproxy-vhost-name* *haproxy-vhost-name*))
-  (uiop:run-program "systemctl reload haproxy" :output t))
+          *haproxy-vhost-name* *haproxy-vhost-name* *haproxy-fqdn*
+          *haproxy-vhost-name* *haproxy-vhost-name* *haproxy-vhost-name*))
+
+(defprop quadlets-activated :posix (user)
+  "Reload USER's user-scope systemd daemon and restart the postgres and
+   postgrest quadlet-generated services, picking up whatever changed in
+   the unit files above. Consfigurator's own SYSTEMD:DAEMON-RELOADED and
+   SYSTEMD:RESTARTED act on the connection's own systemd instance; there's
+   no built-in way to target a different account's --user session reached
+   through `machinectl shell`, so this stays a small custom property
+   rather than a fictional dependency on one that doesn't exist."
+  (:desc (format nil "Quadlets activated for ~A" user))
+  (:apply
+   (mrun (format nil "machinectl shell ~A@ -- systemctl --user daemon-reload" user))
+   (mrun (format nil "machinectl shell ~A@ -- systemctl --user restart postgres postgrest"
+                 user))))
+
+(defhost todo-app-host (:deploy (:local))
+  "The todo-app stack's host: ZFS datasets, the rootless service account
+   and its linger, the generated DB secret, pulled images, the three
+   quadlet units, and the HAProxy vhost, applied in dependency order.
+   Quadlet activation runs before the HAProxy reload, so HAProxy's
+   loopback backend check finds PostgREST already listening rather than
+   reloading against a container that hasn't started yet. DEPLOY-APP below
+   runs this, then hands off to RUN-MIGRATIONS for the database layer,
+   which is unrelated to Consfigurator and stays exactly as it was."
+  (zfs-dataset-mounted *home-dataset* *home-mountpoint*)
+  (zfs-dataset-mounted *data-dataset* *data-mountpoint*)
+  (rootless-service-account *service-user* *home-mountpoint*)
+  (lingering-enabled *service-user*)
+  (db-secret-file *secrets-path* *service-user*)
+  (images-pulled *service-user*
+                  "docker.io/library/postgres:16-alpine"
+                  "docker.io/postgrest/postgrest:v12.0.2")
+  (has-content
+   (format nil "~A/.config/containers/systemd/todo-net.network" *home-mountpoint*)
+   (cinix-write-string (todo-network-quadlet-sections)))
+  (has-content
+   (format nil "~A/.config/containers/systemd/postgres.container" *home-mountpoint*)
+   (cinix-write-string (postgres-quadlet-sections)))
+  (has-content
+   (format nil "~A/.config/containers/systemd/postgrest.container" *home-mountpoint*)
+   (cinix-write-string (postgrest-quadlet-sections)))
+  (quadlets-activated *service-user*)
+  (on-change
+      (has-content (format nil "/etc/haproxy/conf.d/~A.cfg" *haproxy-vhost-name*)
+                    (haproxy-vhost-config))
+    (reloaded "haproxy")))
 
 (defun generate-index-html-template ()
   "Generate the index page shell via Spinneret. The `%s` inside the todo-list
@@ -498,30 +494,38 @@ $$ LANGUAGE plpgsql VOLATILE"
         (cl-migratum.core:apply-pending driver)
         (cl-migratum.core:driver-shutdown driver)))))
 
-(defun deploy ()
-  "Execute system deployment and database initialization in sequence.
-   Datasets before the account that lives on them, account+linger before
-   secrets/images/quadlets, HAProxy last since it depends on the backend
-   already listening."
-  (format t "~&--> Provisioning ZFS datasets, service account, secrets, quadlets, and HAProxy vhost...~%")
-  (todo-app-home-dataset)
-  (todo-app-data-dataset)
-  (todo-app-service-account)
-  (todo-app-db-secret)
-  (todo-app-images-pulled)
-  (todo-network-quadlet)
-  (postgres-quadlet)
-  (postgrest-quadlet)
-  (todo-app-haproxy-vhost)
+(defun deploy-app ()
+  "Provision the whole stack via TODO-APP-HOST (Consfigurator, :local
+   connection: ZFS datasets, service account, linger, secret, images,
+   quadlets, HAProxy), then apply the database migration once PostgreSQL
+   is up. Migrations stay outside Consfigurator; cl-migratum's own driver
+   already handles that layer for real, and folding it into a Consfigurator
+   property would just be re-wrapping a tool that doesn't need wrapping.
 
-  (format t "~&--> Reloading systemd user daemon in ~A's session (via machinectl)...~%" *service-user*)
-  (uiop:run-program
-   (format nil "machinectl shell ~A@ -- systemctl --user daemon-reload" *service-user*)
-   :output t)
-  (uiop:run-program
-   (format nil "machinectl shell ~A@ -- systemctl --user restart postgres postgrest"
-           *service-user*)
-   :output t)
+   TODO-APP-HOST is generated by DEFHOST's own :DEPLOY clause, and that
+   generated function wraps property application in Consfigurator's
+   WITH-DEPLOYMENT-REPORT, which prints a per-property pass/fail report and
+   then returns normally regardless of whether anything failed; it never
+   surfaces failure back to the caller. The only place that information
+   actually exists is the CONSFIGURATOR::SKIPPED-PROPERTIES condition each
+   failed property signals internally, which WITH-DEPLOYMENT-REPORT's own
+   handler-bind catches to build that report but doesn't re-signal or
+   return. Since that inner handler never transfers control, the same
+   condition keeps propagating outward, so a HANDLER-BIND wrapped around
+   the call here sees it too. This is what makes running migrations
+   against a host that failed to provision an explicit refusal instead of
+   a silent, confusing failure three steps later."
+  (format t "~&--> Provisioning via Consfigurator (TODO-APP-HOST)...~%")
+  (let ((provisioning-failed nil))
+    (handler-bind ((consfigurator::skipped-properties
+                     (lambda (c) (declare (ignore c))
+                       (setf provisioning-failed t))))
+      (todo-app-host))
+    (when provisioning-failed
+      (error "TODO-APP-HOST provisioning reported failed properties (see ~
+              the per-property report above). Refusing to proceed to ~
+              database migrations against a host that may not be fully ~
+              provisioned.")))
 
   (format t "~&--> Waiting for PostgreSQL readiness...~%")
   (sleep 3)
@@ -559,19 +563,25 @@ $$ LANGUAGE plpgsql VOLATILE"
    a name attached to a driver that never existed.
 
    System state (ZFS datasets, the service account, quadlet files, the
-   HAProxy vhost) is asserted with plain idempotent functions calling
-   UIOP directly, not a deployment tool linked into this image. Consfigurator
-   is meant to be run against a host, not embedded as a library; its
-   groveled native bindings are exactly the fragile dependency this stays
-   away from.
+   HAProxy vhost) is provisioned by TODO-APP-HOST, a Consfigurator DEFHOST
+   deploying over a :LOCAL connection. Consfigurator's own property
+   library has no ZFS, Podman-quadlet, or HAProxy vocabulary, so those are
+   small custom DEFPROPs (ZFS-DATASET-MOUNTED, ROOTLESS-SERVICE-ACCOUNT,
+   DB-SECRET-FILE, IMAGES-PULLED, QUADLETS-ACTIVATED) written the same way
+   Consfigurator's own bundled properties are: a :DESC, a :CHECK, and an
+   :APPLY. Where Consfigurator does have a fitting built-in
+   (FILE:HAS-CONTENT for the quadlet and HAProxy files,
+   SYSTEMD:LINGERING-ENABLED for the service account, SERVICE:RELOADED
+   wrapped in ON-CHANGE for the HAProxy reload), TODO-APP-HOST uses that
+   instead of reinventing it.
 
-   DEPLOY runs the whole thing in order, and is the place to start reading.
-   Once it's deployed, TODO-APP-DEPLOY.E2E validates the result."
+   DEPLOY-APP runs TODO-APP-HOST and is the place to start reading. Once
+   it's deployed, TODO-APP-DEPLOY.E2E validates the result."
 
   (@provisioning section)
   (@quadlets section)
   (@database section)
-  (deploy function))
+  (deploy-app function))
 
 (defsection @provisioning (:title "ZFS, the service account, and secrets")
   "Before any container can start, the host needs: two ZFS datasets (one
@@ -580,33 +590,36 @@ $$ LANGUAGE plpgsql VOLATILE"
    keeps running without anyone logged in, a database password generated
    once and kept around for the life of the data volume, and the two
    container images already sitting in that account's own rootless image
-   store. Each of these is a plain function DEPLOY calls in sequence, doing
-   its own idempotence check before touching anything."
+   store. Each of these is a Consfigurator property in TODO-APP-HOST's
+   property list, applied in order, each with its own :CHECK so a redeploy
+   only touches what's actually missing."
   (*home-mountpoint* variable)
   (*data-mountpoint* variable)
   (*secrets-path* variable)
-  (write-file-string function)
   (zfs-dataset-mounted function)
-  (todo-app-home-dataset function)
-  (todo-app-data-dataset function)
-  (todo-app-service-account function)
-  (todo-app-db-secret function)
-  (todo-app-images-pulled function))
+  (rootless-service-account function)
+  (db-secret-file function)
+  (images-pulled function))
 
-(defsection @quadlets (:title "Quadlet units via cinix")
+(defsection @quadlets (:title "Quadlet units via cinix, applied through Consfigurator")
   "The three systemd quadlet units (the Postgres container, the PostgREST
    container, and the network they share) are each built as a small alist
    of sections and key/value pairs, the same shape cl-inix:read hands back
    when it parses an INI file. CINIX-WRITE-STRING turns that shape back
-   into text. Nothing here hand-assembles a unit file as one long string."
+   into text, and TODO-APP-HOST writes the result with Consfigurator's own
+   FILE:HAS-CONTENT rather than a hand-rolled file write. Nothing here
+   hand-assembles a unit file as one long string, and nothing here
+   reimplements what Consfigurator's file property already does correctly.
+   QUADLETS-ACTIVATED reloads the service user's --user systemd daemon and
+   restarts both containers once the unit files are in place; Consfigurator
+   has no built-in property that targets a different account's --user
+   session through `machinectl shell`, so that one stays custom."
   (cinix-write-string function)
   (postgres-quadlet-sections function)
   (postgrest-quadlet-sections function)
   (todo-network-quadlet-sections function)
-  (postgres-quadlet function)
-  (postgrest-quadlet function)
-  (todo-network-quadlet function)
-  (todo-app-haproxy-vhost function))
+  (quadlets-activated function)
+  (haproxy-vhost-config function))
 
 (defsection @database (:title "Schema, grants, and the HTML the database serves")
   "The migration is built once, as a list of statements, and joined at the
@@ -697,7 +710,7 @@ $$ LANGUAGE plpgsql VOLATILE"
 (in-suite todo-app-e2e)
 
 (test zfs-datasets-mounted
-  "Both datasets exist and are mounted where TODO-APP-DEPLOY:DEPLOY put them."
+  "Both datasets exist and are mounted where TODO-APP-DEPLOY:DEPLOY-APP put them."
   (is (equal *home-mountpoint* (zfs-dataset-mountpoint *home-dataset*)))
   (is (equal "/srv/todo-app" (zfs-dataset-mountpoint *data-dataset*))))
 
@@ -775,7 +788,7 @@ $$ LANGUAGE plpgsql VOLATILE"
   (run! 'todo-app-e2e))
 
 (defsection @todo-app-e2e (:title "todo-app-deploy e2e")
-  "Post-deploy validation for the stack TODO-APP-DEPLOY:DEPLOY brings up,
+  "Post-deploy validation for the stack TODO-APP-DEPLOY:DEPLOY-APP brings up,
    written against the deployed result rather than against its own
    generator functions (those get their own pre-deploy FiveAM specs
    separately). This suite shells out the same way BATS would for the
@@ -798,12 +811,13 @@ $$ LANGUAGE plpgsql VOLATILE"
   "Entry point for `./todo-app-deploy.ros [e2e]`. Roswell calls this
    automatically after loading the script; it isn't invoked explicitly
    here, so this has to be CL-USER::MAIN specifically, taking &REST ARGV,
-   per Roswell's own script convention. TODO-APP-DEPLOY:DEPLOY underneath
-   is a distinct, differently-shaped, differently-named function this
-   dispatches to (differently-named so there's only ever one thing in
-   this file called MAIN). With no arguments, deploys the stack. With
-   `e2e`, runs TODO-APP-DEPLOY.E2E:RUN-E2E against whatever's already
-   deployed instead."
+   per Roswell's own script convention. TODO-APP-DEPLOY:DEPLOY-APP
+   underneath is a distinct, differently-shaped, differently-named function
+   this dispatches to (differently-named so there's only ever one thing in
+   this file called MAIN, and so it doesn't collide with the CONSFIGURATOR:
+   DEPLOY it imports). With no arguments, deploys the stack. With `e2e`,
+   runs TODO-APP-DEPLOY.E2E:RUN-E2E against whatever's already deployed
+   instead."
   (unless (member "e2e" argv :test #'string=)
-    (return-from main (todo-app-deploy:deploy)))
+    (return-from main (todo-app-deploy:deploy-app)))
   (todo-app-deploy.e2e:run-e2e))

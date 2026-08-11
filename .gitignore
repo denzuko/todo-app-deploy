@@ -1,3 +1,5 @@
 *.fasl
 .qlot/
 qlfile.lock
+build/
+*.tgz

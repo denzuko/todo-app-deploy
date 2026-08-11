@@ -124,6 +124,28 @@ narrative version of what's below.
 
 BSD 3-Clause. See [LICENSE](LICENSE).
 
+## Build, test, dist
+
+```sh
+qlot install         # once, or after editing qlfile: pins every
+                      # dependency (109, transitively) to the exact
+                      # release in qlfile.lock
+make                  # doc + todo-app-deploy.tgz
+make test             # runs ./todo-app-deploy.ros e2e against a live
+                      # deploy; nothing to validate without one
+make install          # tar -C / -x the built tgz
+make clean            # remove build/
+```
+
+`make`'s targets route through `qlot exec` so the static binary
+(`ros dump executable`, verified: it builds and runs correctly against
+this project's full dependency tree, Consfigurator's native bindings
+included) and the e2e run both use the pinned dependency set rather than
+whatever's in the local Quicklisp dist that day. `todo-app-deploy.ros` and
+`docs.ros` still run fine on their own without qlot (plain `ros -Q --
+todo-app-deploy.ros`); qlot only matters for reproducible builds and CI,
+not for interactive use.
+
 ## Upstream
 
 Two documentation patches came out of building this. See

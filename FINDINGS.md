@@ -112,7 +112,7 @@ both templates is ordinary declarative Spinneret markup.
 
 ## Idempotency bugs in the schema itself
 
-These three predate every session working on this script, present since the
+These three predate every attempt to fix this script, present since the
 very first draft, never exercised until an actual second deploy against a
 live database was attempted.
 
@@ -197,5 +197,25 @@ Consfigurator's own built-ins (`file:has-content`, `systemd:
 lingering-enabled`, `service:reloaded` wrapped in `on-change`) in
 dependency order. See UPSTREAM.md for the doc patch this generated: the
 native-header requirement isn't documented anywhere in Consfigurator's own
-install instructions, which is exactly what cost the earlier session the
-time this one didn't have to spend.
+install instructions, which is exactly what made this failure mode take
+real time to track down instead of being a one-line fix.
+
+## Twelfth: docs.ros hits a real bug in 40ants-doc-full's own markdown renderer
+
+**12. `40ants-doc-full/builder:render-to-string` fails with
+`ESRAP:UNDEFINED-RULE-ERROR: The rule INLINE is undefined` on the current
+Quicklisp dist.**
+`docs.ros` is new: the original single-file script never rendered its
+40ants-doc sections to anything, it just carried them for `M-x slime`
+inspection at the REPL. The first attempt to actually run
+`RENDER-TO-STRING` against `@TODO-APP-DEPLOY` hits an ESRAP grammar error
+inside `commondoc-markdown`, a dependency of `40ants-doc-full` rather than
+of this script. Confirmed it isn't content-specific: the same error fires
+on the very first section rendered, regardless of which section or how
+plain its docstring is, which points at a missing or misregistered ESRAP
+rule somewhere in `commondoc-markdown`'s own grammar definitions on this
+Quicklisp dist, not at anything in this repo's docstrings. Not chased
+further; `docs.ros` is left in the repo since the rest of it (loading
+`:todo-app/docs`, walking the section tree, writing to `build/`) works
+correctly, and this is the kind of thing a `commondoc-markdown` version
+bump is more likely to fix than a workaround here would.

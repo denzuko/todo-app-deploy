@@ -1,0 +1,32 @@
+#!/bin/sh
+#|-*- mode:lisp -*-|#
+#|
+exec ros -Q -- $0 "$@"
+|#
+(progn
+  (ros:ensure-asdf)
+  (asdf:load-asd (merge-pathnames "todo-app.asd" *load-pathname*))
+  #+quicklisp
+  (let ((needed '(:40ants-doc :40ants-doc-full)))
+    (unless (every #'ql-dist:find-system (mapcar #'string-downcase needed))
+      (ql-dist:install-dist "http://dist.ultralisp.org/" :prompt nil))
+    (ql:quickload (cons :todo-app/docs needed) :silent t)))
+
+(declaim (optimize (speed 3) (safety 1) (debug 1)))
+
+(defpackage :ros.script.docs.3167498364
+  (:use :cl :40ants-doc :todo-app/docs))
+(in-package :ros.script.docs.3167498364)
+
+(defun main (&rest argv)
+  (declare (ignore argv))
+  (ensure-directories-exist "build/")
+  (dolist (pair '(("@TODO-APP-DEPLOY" . "build/todo-app-deploy.md")
+                  ("@TODO-APP-E2E" . "build/todo-app-e2e.md")))
+    (let ((markdown (40ants-doc-full/builder:render-to-string
+                      (symbol-value (find-symbol (car pair) "TODO-APP/DOCS"))
+                      :format :markdown)))
+      (with-open-file (out (cdr pair) :direction :output :if-exists :supersede)
+        (write-string markdown out))
+      (format t "Wrote ~A~%" (cdr pair)))))
+;;; vim: set ft=lisp lisp:

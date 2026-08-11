@@ -1,6 +1,6 @@
 # todo-app-deploy
 
-A single Roswell script that stands up a small PostgREST + HTMX + Alpine.js
+A Roswell/Consfigurator deploy of a small PostgREST + HTMX + Alpine.js
 to-do list app on rootless Podman quadlets behind HAProxy. The point isn't
 the app. It's that every layer of it (systemd units, SQL schema, HTML) gets
 generated from a small in-memory representation instead of hand-typed
@@ -50,9 +50,9 @@ a live PostgreSQL instance, not by code review alone.
   style stack, not a generic cloud target.
 - A reachable PostgreSQL server for the migration step.
 
-The script bootstraps its own Lisp dependencies on first run, falling back
-to Ultralisp only for whichever systems aren't already in the local
-Quicklisp dist:
+Both `.ros` entry points bootstrap their Lisp dependencies on first run,
+falling back to Ultralisp only for whichever systems aren't already in the
+local Quicklisp dist:
 
 ```
 consfigurator sxql spinneret cl-inix 40ants-doc fiveam dexador postmodern
@@ -63,41 +63,62 @@ Consfigurator drives the actual provisioning: ZFS datasets, the service
 account, the generated secret, pulled images, the quadlet unit files, and
 the HAProxy vhost are all Consfigurator properties applied to a single
 `defhost` over a `:local` connection. See FINDINGS.md for why it wasn't
-loading at first, and @provisioning/@quadlets in the script's own
+loading at first, and @provisioning/@quadlets in `src/docs.lisp`'s
 40ants-doc sections for how the properties are actually built.
 
 ## Usage
 
 ```sh
-chmod +x todo-app-deploy.ros
+chmod +x todo-app-deploy.ros docs.ros
 
 # deploy
 ./todo-app-deploy.ros
 
 # validate an existing deploy: FiveAM, no bats anywhere in the loop
 ./todo-app-deploy.ros e2e
+
+# render the 40ants-doc sections to build/*.md
+./docs.ros
 ```
 
-Both subcommands are dispatched from a single `cl-user:main (&rest argv)`.
-Roswell calls this automatically after loading the script, which is a
-different convention than the file structure suggests at first glance. See
-FINDINGS.md if that surprises you. It surprised me too.
+`docs.ros` currently fails on a real bug in `40ants-doc-full`'s own
+markdown renderer, unrelated to this repo's code; see finding 12 in
+[FINDINGS.md](FINDINGS.md).
+
+Both `deploy` and `e2e` are dispatched from a single `main (&rest argv)` in
+`todo-app-deploy.ros`'s own throwaway wrapper package. Roswell calls `main`
+automatically after loading the script; it isn't invoked explicitly in the
+file itself.
 
 ## Layout
 
-Everything lives in one file, in three packages:
+`:todo-app` is the umbrella ASDF namespace, defined in
+[`todo-app.asd`](todo-app.asd) and empty except for existing so its
+slash-named subsystems can load at all (both ASDF and Quicklisp resolve a
+system named `todo-app/deploy` by first locating `todo-app` itself). A
+future component (a webapp, a CLI, whatever) would add `todo-app/<name>`
+alongside the three below without renaming anything already here:
 
-- `todo-app-deploy`: the deploy logic itself.
-- `todo-app-deploy.e2e`: a FiveAM suite that validates a live deploy.
-  It checks ZFS mountpoints, linger, quadlet unit state, the HAProxy-fronted
-  URL over real HTTP via Dexador, the schema and grants via Postmodern, and
-  a full add-toggle-delete round trip through the actual API.
-- `cl-user`: just the Roswell entry point.
+- [`src/deploy.lisp`](src/deploy.lisp) (`:todo-app/deploy`): the deploy
+  logic itself; everything documented in @provisioning, @quadlets, and
+  @database.
+- [`t/e2e.lisp`](t/e2e.lisp) (`:todo-app/e2e`): a FiveAM suite that
+  validates a live deploy. It checks ZFS mountpoints, linger, quadlet unit
+  state, the HAProxy-fronted URL over real HTTP via Dexador, the schema
+  and grants via Postmodern, and a full add-toggle-delete round trip
+  through the actual API.
+- [`src/docs.lisp`](src/docs.lisp) (`:todo-app/docs`): the 40ants-doc
+  sections, kept in their own system so a production deploy (or a `ros
+  dump executable` static binary) never has to pull in 40ants-doc just to
+  provision a stack.
 
-Both `todo-app-deploy` and `todo-app-deploy.e2e` are documented as
-[40ants-doc](https://40ants.com/doc/) sections (`@todo-app-deploy`,
-`@todo-app-e2e`) rather than block comments. Read those first if you want
-the narrative version of what's below.
+`todo-app-deploy.ros` and `docs.ros` are thin command wrappers: each loads
+`todo-app.asd`, quickloads what it needs, and dispatches into the real
+systems above. Neither carries any deploy or documentation logic itself.
+
+`@todo-app-deploy` and `@todo-app-e2e` are the two top-level 40ants-doc
+sections, rendered by `docs.ros`. Read those first if you want the
+narrative version of what's below.
 
 ## License
 

@@ -6,6 +6,10 @@ exec ros -Q -- $0 "$@"
 
 (in-package :cl-user)
 
+(ros:ensure-asdf)
+
+(declaim (optimize (speed 3) (safety 1) (debug 1)))
+
 (let ((needed '(:consfigurator :sxql :spinneret :cl-inix :40ants-doc :fiveam
                 :dexador :postmodern :cl-migratum
                 :cl-migratum.driver.postmodern-postgresql)))
@@ -183,11 +187,13 @@ backend ~A_be
   "The todo-app stack's host: ZFS datasets, the rootless service account
    and its linger, the generated DB secret, pulled images, the three
    quadlet units, and the HAProxy vhost, applied in dependency order.
-   Quadlet activation runs before the HAProxy reload, so HAProxy's
-   loopback backend check finds PostgREST already listening rather than
-   reloading against a container that hasn't started yet. DEPLOY-APP below
-   runs this, then hands off to RUN-MIGRATIONS for the database layer,
-   which is unrelated to Consfigurator and stays exactly as it was."
+   Quadlet activation runs before the HAProxy reload only because that's
+   the more natural read order, not because it's required: HAProxy's
+   `check` directive already monitors backend health on its own, so a
+   reload against a not-yet-listening PostgREST is a normal transient
+   down state, not a failure condition. DEPLOY-APP below runs this, then
+   hands off to RUN-MIGRATIONS for the database layer, which is unrelated
+   to Consfigurator and stays exactly as it was."
   (zfs-dataset-mounted *home-dataset* *home-mountpoint*)
   (zfs-dataset-mounted *data-dataset* *data-mountpoint*)
   (rootless-service-account *service-user* *home-mountpoint*)

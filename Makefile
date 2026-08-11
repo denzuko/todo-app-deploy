@@ -4,12 +4,16 @@ BUILDROOT := build/$(PREFIX)/bin
 MANROOT   := build/$(PREFIX)/man/man1
 
 # qlfile.lock pins every dependency (109, transitively) to the exact
-# release qlot resolved at `qlot install` time. All ros invocations below
-# route through `qlot exec` so builds and tests run against that pinned
-# set rather than whatever happens to be in the local Quicklisp dist that
-# day. Run `qlot install` once (or after editing qlfile) before any of
-# these targets; it's not a dependency of them since it's a one-time /
-# on-demand step, not something that should silently re-run on every build.
+# release qlot resolved when it was written (`qlot add <dep>` for each
+# one, or `qlot install` after a manual qlfile edit). Setting
+# QUICKLISP_HOME=.qlot/ is what actually activates that pinned set --
+# `.qlot/` sitting in the directory does nothing on its own, ros doesn't
+# auto-detect it. All recipes below export it for that reason. Run
+# `qlot add <dep>` (or `qlot install` after editing qlfile) once, before
+# any of these targets; it's not a dependency of them since it's a
+# one-time / on-demand step, not something that should silently re-run on
+# every build.
+export QUICKLISP_HOME := .qlot/
 
 # `test` runs the post-deploy TODO-APP/E2E suite against a LIVE deploy --
 # it is not a build-time unit test, and has nothing to validate without a
@@ -24,10 +28,10 @@ $(MANROOT):
 	@mkdir -p $@
 
 $(BUILDROOT)/$(TARGET): $(TARGET).ros $(BUILDROOT)
-	@qlot exec ros dump executable $(TARGET).ros -o $@
+	@ros dump executable $(TARGET).ros -o $@
 
 build/$(TARGET).md build/todo-app-e2e.md: $(TARGET).ros docs.ros todo-app.asd src/deploy.lisp src/docs.lisp t/e2e.lisp
-	@qlot exec ros docs.ros
+	@ros docs.ros
 
 $(MANROOT)/$(TARGET).1: build/$(TARGET).md $(MANROOT)
 	@pandoc -s -t man build/$(TARGET).md -o $@
@@ -39,7 +43,7 @@ install: $(TARGET).tgz
 	@tar -C / -xzvf $<
 
 test: $(TARGET).ros
-	@qlot exec ./$< e2e
+	@./$< e2e
 
 # `make doc` currently fails: docs.ros hits a real bug in
 # 40ants-doc-full's own markdown renderer, unrelated to this repo's code.

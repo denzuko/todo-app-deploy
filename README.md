@@ -127,9 +127,10 @@ BSD 3-Clause. See [LICENSE](LICENSE).
 ## Build, test, dist
 
 ```sh
-qlot install         # once, or after editing qlfile: pins every
-                      # dependency (109, transitively) to the exact
-                      # release in qlfile.lock
+ros install qlot     # once, to get the qlot CLI
+qlot add <dep>        # adds a dependency to qlfile and pins it in
+                      # qlfile.lock; already done for everything this
+                      # repo needs, only relevant when adding a new one
 make                  # doc + todo-app-deploy.tgz
 make test             # runs ./todo-app-deploy.ros e2e against a live
                       # deploy; nothing to validate without one
@@ -137,14 +138,17 @@ make install          # tar -C / -x the built tgz
 make clean            # remove build/
 ```
 
-`make`'s targets route through `qlot exec` so the static binary
-(`ros dump executable`, verified: it builds and runs correctly against
-this project's full dependency tree, Consfigurator's native bindings
-included) and the e2e run both use the pinned dependency set rather than
-whatever's in the local Quicklisp dist that day. `todo-app-deploy.ros` and
-`docs.ros` still run fine on their own without qlot (plain `ros -Q --
-todo-app-deploy.ros`); qlot only matters for reproducible builds and CI,
-not for interactive use.
+`qlfile.lock` pins every dependency (109, transitively) to the exact
+release `qlot add`/`qlot install` resolved. `.qlot/` sitting in the
+directory does nothing on its own; `QUICKLISP_HOME=.qlot/` is what
+actually activates the pinned set, and the Makefile exports it for every
+recipe. `ros dump executable` (verified: it builds and runs correctly
+against this project's full dependency tree, Consfigurator's native
+bindings included) and the e2e run both use the pinned dependency set
+this way rather than whatever's in the local Quicklisp dist that day.
+`todo-app-deploy.ros` and `docs.ros` still run fine directly (plain `./
+todo-app-deploy.ros`) without `QUICKLISP_HOME` set; qlot only matters for
+reproducible builds and CI, not for interactive use.
 
 ## Upstream
 

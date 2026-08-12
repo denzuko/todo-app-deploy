@@ -164,6 +164,112 @@ machinectl shell todo-app@ -- systemctl --user start postgres postgrest
   the service user's systemd session isn't surviving reboots, this is
   the first thing to check.
 
+## Playbook: replication and recovery
+
+Both ZFS datasets (`storage/users/todo-app`, home to the generated secret;
+`storage/containers/todo-app`, the Postgres data directory) are worth
+replicating off-host; the second one is the actual database, the first
+one is what lets a restore stand back up without regenerating a password
+Postgres no longer recognizes.
+
+rsync.net's native `zfs send`/`zfs receive` support needs a
+["zfs send capable" account](https://www.rsync.net/products/zfsintro.html)
+specifically, not their ordinary rsync-only tier. Once that's set up you
+get SSH access and your own zpool name, found with `zfs list` after
+logging in.
+
+**Initial full replication**, once per dataset:
+
+```sh
+zfs snapshot storage/users/todo-app@initial
+zfs snapshot storage/containers/todo-app@initial
+
+zfs send -p storage/users/todo-app@initial | \
+  ssh youraccount@youraccount.rsync.net zfs receive -Fu data1/todo-app-users
+zfs send -p storage/containers/todo-app@initial | \
+  ssh youraccount@youraccount.rsync.net zfs receive -Fu data1/todo-app-containers
+```
+
+`data1` is a stand-in for whatever pool name rsync.net actually assigns.
+`-p` on send carries dataset properties (including `mountpoint`) across,
+so a restore doesn't need them set by hand. `-u` on receive keeps the
+remote copy unmounted, since it's a backup target, not a second live
+copy.
+
+**Incremental replication**, on a schedule:
+
+```sh
+#!/bin/sh
+# /usr/local/sbin/replicate-todo-app.sh
+set -eu
+HOST="youraccount@youraccount.rsync.net"
+TS=$(date +%Y%m%d%H%M%S)
+
+replicate() {
+  src="$1"; dst="$2"
+  prev=$(zfs list -t snapshot -H -o name -s creation "$src" | tail -1)
+  zfs snapshot "${src}@${TS}"
+  if [ -n "$prev" ]; then
+    zfs send -i "$prev" "${src}@${TS}" | ssh "$HOST" zfs receive -Fu "$dst"
+  else
+    zfs send -p "${src}@${TS}" | ssh "$HOST" zfs receive -Fu "$dst"
+  fi
+}
+
+replicate storage/users/todo-app      data1/todo-app-users
+replicate storage/containers/todo-app data1/todo-app-containers
+```
+
+Run on a timer rather than by hand:
+
+```
+# /etc/systemd/system/todo-app-replicate.timer
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+with a matching `.service` unit whose `ExecStart` is the script above.
+The generated secret travels in plaintext inside `storage/users/todo-app`;
+SSH already encrypts the send in transit, but if that's not enough for a
+given threat model, ZFS native encryption on the source dataset plus
+`zfs send -w` (raw, sends the still-encrypted blocks) is the next step,
+not something this project currently sets up.
+
+**Recovery**, onto a fresh or repaired host, after
+[Requirements](#requirements) are met and before running
+`todo-app-deploy.ros`:
+
+```sh
+ssh youraccount@youraccount.rsync.net zfs list -t snapshot data1/todo-app-users
+ssh youraccount@youraccount.rsync.net zfs list -t snapshot data1/todo-app-containers
+# pick the snapshot to restore from, then:
+ssh youraccount@youraccount.rsync.net zfs send data1/todo-app-users@SNAP | \
+  zfs receive -F storage/users/todo-app
+ssh youraccount@youraccount.rsync.net zfs send data1/todo-app-containers@SNAP | \
+  zfs receive -F storage/containers/todo-app
+```
+
+If the original send didn't carry `-p`, set the mountpoints explicitly
+so Consfigurator finds them where it expects:
+
+```sh
+zfs set mountpoint=/var/lib/todo-app storage/users/todo-app
+zfs set mountpoint=/srv/todo-app storage/containers/todo-app
+```
+
+Then run `./todo-app-deploy.ros` as normal. `zfs-dataset-mounted`'s
+`:check` finds both datasets already present and does nothing further
+to them; the service account, linger, quadlets, and HAProxy vhost all get
+recreated fresh, and the Postgres container starts against the restored
+data directory rather than an empty one. Validate with
+`./todo-app-deploy.ros e2e`, and spot-check the actual data with the
+`psql` command from the Runbook above before considering the restore
+done.
+
 ## Decommission
 
 Destructive and, past the ZFS step, not reversible without a separate

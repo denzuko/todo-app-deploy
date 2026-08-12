@@ -1,6 +1,6 @@
 # Findings
 
-Eleven real bugs, found by actually installing Roswell and standing up a
+Twelve real bugs, found by actually installing Roswell and standing up a
 live PostgreSQL instance rather than by reading the code. None of these
 showed up in review. Several are the kind of thing that would pass a code
 review cleanly and then break in production on the second deploy. Grouped
@@ -203,19 +203,46 @@ real time to track down instead of being a one-line fix.
 ## Twelfth: docs.ros hits a real bug in 40ants-doc-full's own markdown renderer
 
 **12. `40ants-doc-full/builder:render-to-string` fails with
-`ESRAP:UNDEFINED-RULE-ERROR: The rule INLINE is undefined` on the current
-Quicklisp dist.**
+`ESRAP:UNDEFINED-RULE-ERROR: The rule INLINE is undefined` on two of this
+project's five sections.**
 `docs.ros` is new: the original single-file script never rendered its
 40ants-doc sections to anything, it just carried them for `M-x slime`
 inspection at the REPL. The first attempt to actually run
-`RENDER-TO-STRING` against `@TODO-APP-DEPLOY` hits an ESRAP grammar error
-inside `commondoc-markdown`, a dependency of `40ants-doc-full` rather than
-of this script. Confirmed it isn't content-specific: the same error fires
-on the very first section rendered, regardless of which section or how
-plain its docstring is, which points at a missing or misregistered ESRAP
-rule somewhere in `commondoc-markdown`'s own grammar definitions on this
-Quicklisp dist, not at anything in this repo's docstrings. Not chased
-further; `docs.ros` is left in the repo since the rest of it (loading
-`:todo-app/docs`, walking the section tree, writing to `build/`) works
-correctly, and this is the kind of thing a `commondoc-markdown` version
-bump is more likely to fix than a workaround here would.
+`RENDER-TO-STRING` hit an ESRAP grammar error inside `commondoc-markdown`,
+a dependency of `40ants-doc-full` rather than of this script.
+
+An earlier version of this finding claimed the failure was
+content-independent and fired on the first section regardless of which
+one. That was wrong, caught by actually testing each section separately
+rather than stopping at the first failure: `@PROVISIONING`, `@DATABASE`,
+and `@TODO-APP-E2E` all render correctly. Only `@TODO-APP-DEPLOY` and
+`@QUADLETS` fail. Narrowed further before running out of leads worth
+chasing:
+
+- Raw parsing isn't the problem. `COMMONDOC-MARKDOWN::PARSE-MARKDOWN`
+  succeeds standalone on the exact failing docstring text, even loaded
+  inside this project's full dependency tree. The failure is specific to
+  `RENDER-TO-STRING`'s pipeline, not to markdown parsing itself.
+- Not reproducible with synthetic content of comparable length,
+  structure, or locative cross-references (`(some-func function)` style)
+  in a clean throwaway package.
+- Not reproducible by loading `:todo-app/deploy`'s full transitive
+  dependency set (SXQL, Consfigurator, Postmodern, cl-migratum, cl-inix,
+  Spinneret, individually and all together) alongside `40ants-doc-full`
+  in a clean package with the real failing text. Every combination
+  rendered fine.
+- Reproducible by defining that same real text inside the actual
+  `:todo-app/docs` package specifically, which `:use`s
+  `:todo-app/deploy` and `:todo-app/e2e` rather than importing
+  selectively. Something about that package's environment matters, not
+  just the dependency set being loaded.
+- Not a symbol-identity collision: `INLINE` resolves to the exact same
+  `COMMON-LISP:INLINE` in `:todo-app/docs` as everywhere else (`EQ`
+  checked directly), ruling out a same-named-different-symbol shadowing
+  theory that fit the evidence right up until it was actually tested.
+
+Left as an open, accurately-scoped question rather than a false-certainty
+diagnosis. `docs.ros` stays in the repo since everything else about it
+(loading `:todo-app/docs`, walking the section tree, writing to `build/`)
+is correct, and `@TODO-APP-DEPLOY` and `@QUADLETS` are exactly the two
+sections most worth documenting, which is the annoying part.

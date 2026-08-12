@@ -5,7 +5,7 @@ libraries that were already behaving correctly and as designed. None of
 that is a library bug, and it's worth being precise about the distinction
 before forking anything or opening an issue against someone else's project.
 
-Nine of the eleven findings settle that way outright. `cl-migratum-driver-pg`
+Nine of the twelve findings settle that way outright. `cl-migratum-driver-pg`
 never existed; the real driver constructor was there all along. SXQL has no
 schema-DDL vocabulary and never claimed to. Roswell's automatic call to
 `main` is documented behavior, not a surprise the framework owes an
@@ -20,6 +20,14 @@ for a configuration-management tool, and it's this script's job, not
 Consfigurator's, to decide it wants fail-fast semantics and wrap the call
 accordingly. None of the nine is upstream-worthy; each is fixed locally,
 and FINDINGS.md covers the fix.
+
+One finding, the twelfth, stays open rather than settled either way.
+`docs.ros`'s `ESRAP:UNDEFINED-RULE-ERROR` inside `commondoc-markdown`
+was narrowed a long way (which two of five sections fail, several ruled-out
+theories, a real content/package dependency confirmed) without reaching an
+actual root cause. Not upstream-worthy yet, since there isn't a diagnosed
+bug to report; premature to file anything against `commondoc-markdown`
+before knowing what's actually wrong.
 
 Two findings land differently, and both turn out to be documentation gaps
 rather than code bugs.

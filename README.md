@@ -38,8 +38,7 @@ text.
 - `libacl1-dev` and `libcap-dev` on the machine that loads this script.
   Consfigurator's `CFFI-GROVEL` step needs both native headers to build;
   neither is documented as a Consfigurator dependency anywhere upstream,
-  so it's called out here explicitly. A doc patch for this is prepared
-  in [`upstream-patches/consfigurator/`](upstream-patches/consfigurator/).
+  so it's called out here explicitly.
 - A target host with `zfs`, `podman` (rootless, quadlet-capable systemd),
   `haproxy`, and `machinectl`. This is written for a specific home-lab
   style stack, not a generic cloud target.
@@ -252,29 +251,3 @@ release `qlot add`/`qlot install` resolved. `ros dump executable`
 dependency tree, Consfigurator's native bindings included) works
 directly, no extra setup at invocation time beyond having run `qlot add`
 against the project once.
-
-## Upstream
-
-Two documentation patches are prepared and ready to send, in
-[`upstream-patches/`](upstream-patches/) as both `.patch` files and git
-bundles:
-
-- **Consfigurator**: notes that `libacl1-dev`/`libcap-dev` are real build
-  dependencies of its `CFFI-GROVEL` step, undocumented anywhere upstream.
-  Consfigurator doesn't take GitHub pull requests; this goes to the
-  `sgo-software-discuss` mailing list via `git send-email`, or as a
-  publicly hosted branch with a merge request by email.
-- **Spinneret**: documents `spinneret:*always-quote*`'s compile-time-only
-  behavior (`let`-binding it around a call site is a silent no-op; it has
-  to be `setf` before the affected code compiles). Ordinary GitHub PR
-  workflow.
-
-One further bug, unpatched: `3bmd`'s smart-dash extension (used by
-`commondoc-markdown`, which `40ants-doc-full` builds on) breaks on a bare
-`--word` with no space, throwing `ESRAP:UNDEFINED-RULE-ERROR`. Minimal
-repro: `(commondoc-markdown::parse-markdown "--user")` fails,
-`"-- user"` and `"-user"` both succeed. Worked around locally by wrapping
-CLI flags in backticks in this project's own docstrings (the correct way
-to write one in prose regardless). No patch prepared; fixing an ESRAP
-grammar correctly needs more familiarity with it than skimming it from
-the outside gives.

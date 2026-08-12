@@ -7,12 +7,6 @@ generated from a small in-memory representation instead of hand-typed
 strings, the same way a compiler works from an AST rather than concatenating
 text.
 
-Almost everything in this repo exists because building it surfaced real bugs
-in the assumptions behind it: some in this script, some genuine footguns in
-the libraries it leans on. See [FINDINGS.md](FINDINGS.md) for the full list.
-Each one was caught by running the thing against a live Roswell install and
-a live PostgreSQL instance, not by code review alone.
-
 ## What it builds
 
 - Two ZFS datasets, a rootless systemd-user service account with linger
@@ -43,8 +37,9 @@ a live PostgreSQL instance, not by code review alone.
 - [Roswell](https://github.com/roswell/roswell)
 - `libacl1-dev` and `libcap-dev` on the machine that loads this script.
   Consfigurator's `CFFI-GROVEL` step needs both native headers to build;
-  neither is documented as a Consfigurator dependency anywhere upstream
-  (see UPSTREAM.md), so it's called out here explicitly.
+  neither is documented as a Consfigurator dependency anywhere upstream,
+  so it's called out here explicitly. A doc patch for this is prepared
+  in [`upstream-patches/consfigurator/`](upstream-patches/consfigurator/).
 - A target host with `zfs`, `podman` (rootless, quadlet-capable systemd),
   `haproxy`, and `machinectl`. This is written for a specific home-lab
   style stack, not a generic cloud target.
@@ -62,9 +57,9 @@ cl-migratum cl-migratum.driver.postmodern-postgresql
 Consfigurator drives the actual provisioning: ZFS datasets, the service
 account, the generated secret, pulled images, the quadlet unit files, and
 the HAProxy vhost are all Consfigurator properties applied to a single
-`defhost` over a `:local` connection. See FINDINGS.md for why it wasn't
-loading at first, and @provisioning/@quadlets in `src/docs.lisp`'s
-40ants-doc sections for how the properties are actually built.
+`defhost` over a `:local` connection. See @provisioning/@quadlets in
+`src/docs.lisp`'s 40ants-doc sections for how the properties are actually
+built.
 
 ## Usage
 
@@ -85,6 +80,121 @@ Both `deploy` and `e2e` are dispatched from a single `main (&rest argv)` in
 `todo-app-deploy.ros`'s own throwaway wrapper package. Roswell calls `main`
 automatically after loading the script; it isn't invoked explicitly in the
 file itself.
+
+## Runbook
+
+Everything below assumes the variables in `src/deploy.lisp`
+(`*service-user*`, `*home-mountpoint*`, `*data-mountpoint*`,
+`*haproxy-vhost-name*`) at their current values: service account
+`todo-app`, home `/var/lib/todo-app`, data `/srv/todo-app`, HAProxy vhost
+name `todo-app`. Adjust if those have changed.
+
+**Is it up?**
+
+```sh
+machinectl shell todo-app@ -- systemctl --user status postgres postgrest
+systemctl status haproxy
+```
+
+**Logs.** Both containers log through their quadlet-generated units, in
+the service user's own journal:
+
+```sh
+machinectl shell todo-app@ -- journalctl --user -u postgres -u postgrest -f
+```
+
+**Restart the app containers** (does not touch ZFS, the account, or
+HAProxy):
+
+```sh
+machinectl shell todo-app@ -- systemctl --user restart postgres postgrest
+```
+
+**Redeploy.** `./todo-app-deploy.ros` is idempotent; rerunning it only
+touches whatever Consfigurator's `:check` clauses find missing or changed
+(new quadlet content, a modified HAProxy vhost) and leaves the rest alone.
+It will not regenerate the database secret; see below if that's actually
+what's needed.
+
+**Validate a deploy** without redeploying:
+
+```sh
+./todo-app-deploy.ros e2e
+```
+
+**Database access**, via the running container (peer auth inside the
+container, no password needed for this path):
+
+```sh
+machinectl shell todo-app@ -- podman exec -it todo-postgres \
+  psql -U postgres -d tododb
+```
+
+To read the generated password itself (needed for any external
+connection, e.g. through `PGRST_DB_URI`):
+
+```sh
+cat /var/lib/todo-app/.env/pgpass
+```
+
+**Rotating the database password.** `db-secret-file`'s whole point is
+leaving the secret alone on redeploy, so this is a deliberate manual
+procedure, not something a redeploy will ever do for you:
+
+```sh
+machinectl shell todo-app@ -- systemctl --user stop postgres postgrest
+NEW_PASS=$(openssl rand -hex 32)
+machinectl shell todo-app@ -- \
+  podman exec todo-postgres psql -U postgres -c \
+  "ALTER USER postgres WITH PASSWORD '$NEW_PASS'"
+# then edit /var/lib/todo-app/.env/pgpass to match $NEW_PASS in both
+# POSTGRES_PASSWORD and PGRST_DB_URI, before restarting:
+machinectl shell todo-app@ -- systemctl --user start postgres postgrest
+```
+
+**Common failure modes:**
+
+- `deploy-app` aborts with "TODO-APP-HOST provisioning reported failed
+  properties": read the per-property report immediately above the error;
+  Consfigurator names exactly which property failed and why.
+- Quadlet changes not taking effect: `systemctl --user daemon-reload`
+  needs to run in the service user's session after any unit file changes,
+  which `quadlets-activated` already does as part of a normal deploy, but
+  is easy to forget after a manual edit.
+- `loginctl show-user todo-app --property=Linger` should say `yes`; if
+  the service user's systemd session isn't surviving reboots, this is
+  the first thing to check.
+
+## Decommission
+
+Destructive and, past the ZFS step, not reversible without a separate
+backup. Stop before destroy, least-destructive first:
+
+```sh
+# 1. Stop the app
+machinectl shell todo-app@ -- systemctl --user stop postgres postgrest
+
+# 2. Remove the quadlet unit files and reload
+rm /var/lib/todo-app/.config/containers/systemd/{postgres.container,postgrest.container,todo-net.network}
+machinectl shell todo-app@ -- systemctl --user daemon-reload
+
+# 3. Remove the HAProxy vhost and reload
+rm /etc/haproxy/conf.d/todo-app.cfg
+systemctl reload haproxy
+
+# 4. Disable linger and remove the service account
+loginctl disable-linger todo-app
+userdel todo-app
+
+# 5. Destroy the ZFS datasets -- irreversible, takes the database and
+#    the generated secret with it. Confirm there's nothing worth keeping
+#    (a pg_dump, a snapshot) before this step.
+zfs destroy storage/containers/todo-app
+zfs destroy storage/users/todo-app
+```
+
+Podman images pulled into the service user's rootless store are removed
+along with the account in step 4; nothing separate to clean up there.
 
 ## Layout
 
@@ -142,11 +252,29 @@ release `qlot add`/`qlot install` resolved. `ros dump executable`
 dependency tree, Consfigurator's native bindings included) works
 directly, no extra setup at invocation time beyond having run `qlot add`
 against the project once.
-reproducible builds and CI, not for interactive use.
 
 ## Upstream
 
-Two documentation patches came out of building this. See
-[UPSTREAM.md](UPSTREAM.md) for the reasoning, and
-[`upstream-patches/`](upstream-patches/) for the ready-to-send
-`.patch` files and git bundles against Consfigurator and Spinneret.
+Two documentation patches are prepared and ready to send, in
+[`upstream-patches/`](upstream-patches/) as both `.patch` files and git
+bundles:
+
+- **Consfigurator**: notes that `libacl1-dev`/`libcap-dev` are real build
+  dependencies of its `CFFI-GROVEL` step, undocumented anywhere upstream.
+  Consfigurator doesn't take GitHub pull requests; this goes to the
+  `sgo-software-discuss` mailing list via `git send-email`, or as a
+  publicly hosted branch with a merge request by email.
+- **Spinneret**: documents `spinneret:*always-quote*`'s compile-time-only
+  behavior (`let`-binding it around a call site is a silent no-op; it has
+  to be `setf` before the affected code compiles). Ordinary GitHub PR
+  workflow.
+
+One further bug, unpatched: `3bmd`'s smart-dash extension (used by
+`commondoc-markdown`, which `40ants-doc-full` builds on) breaks on a bare
+`--word` with no space, throwing `ESRAP:UNDEFINED-RULE-ERROR`. Minimal
+repro: `(commondoc-markdown::parse-markdown "--user")` fails,
+`"-- user"` and `"-user"` both succeed. Worked around locally by wrapping
+CLI flags in backticks in this project's own docstrings (the correct way
+to write one in prose regardless). No patch prepared; fixing an ESRAP
+grammar correctly needs more familiarity with it than skimming it from
+the outside gives.

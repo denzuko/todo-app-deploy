@@ -81,10 +81,6 @@ chmod +x todo-app-deploy.ros docs.ros
 ./docs.ros
 ```
 
-`docs.ros` currently fails on a real bug in `40ants-doc-full`'s own
-markdown renderer, unrelated to this repo's code; see finding 12 in
-[FINDINGS.md](FINDINGS.md).
-
 Both `deploy` and `e2e` are dispatched from a single `main (&rest argv)` in
 `todo-app-deploy.ros`'s own throwaway wrapper package. Roswell calls `main`
 automatically after loading the script; it isn't invoked explicitly in the

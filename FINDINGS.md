@@ -200,49 +200,60 @@ native-header requirement isn't documented anywhere in Consfigurator's own
 install instructions, which is exactly what made this failure mode take
 real time to track down instead of being a one-line fix.
 
-## Twelfth: docs.ros hits a real bug in 40ants-doc-full's own markdown renderer
+## Twelfth: `--flag`-style text breaks 40ants-doc-full's markdown renderer
 
-**12. `40ants-doc-full/builder:render-to-string` fails with
-`ESRAP:UNDEFINED-RULE-ERROR: The rule INLINE is undefined` on two of this
-project's five sections.**
+**12. `40ants-doc-full/builder:render-to-string` (by way of
+`commondoc-markdown::parse-markdown`) fails with
+`ESRAP:UNDEFINED-RULE-ERROR: The rule INLINE is undefined` whenever a
+docstring contains a bare `--` immediately followed by a word, with no
+space.**
 `docs.ros` is new: the original single-file script never rendered its
 40ants-doc sections to anything, it just carried them for `M-x slime`
 inspection at the REPL. The first attempt to actually run
-`RENDER-TO-STRING` hit an ESRAP grammar error inside `commondoc-markdown`,
-a dependency of `40ants-doc-full` rather than of this script.
+`RENDER-TO-STRING` hit an ESRAP grammar error, and the investigation took
+three wrong turns before landing on the real cause, each corrected by
+actually testing the claim rather than trusting it:
 
-An earlier version of this finding claimed the failure was
-content-independent and fired on the first section regardless of which
-one. That was wrong, caught by actually testing each section separately
-rather than stopping at the first failure: `@PROVISIONING`, `@DATABASE`,
-and `@TODO-APP-E2E` all render correctly. Only `@TODO-APP-DEPLOY` and
-`@QUADLETS` fail. Narrowed further before running out of leads worth
-chasing:
+**Wrong turn one.** An early version of this finding claimed the failure
+was content-independent and fired on the first section regardless of
+which one. Untrue: testing each of the project's five sections
+separately (rather than stopping at the first failure) found only
+`@TODO-APP-DEPLOY` and `@QUADLETS` fail; `@PROVISIONING`, `@DATABASE`,
+and `@TODO-APP-E2E` all render fine.
 
-- Raw parsing isn't the problem. `COMMONDOC-MARKDOWN::PARSE-MARKDOWN`
-  succeeds standalone on the exact failing docstring text, even loaded
-  inside this project's full dependency tree. The failure is specific to
-  `RENDER-TO-STRING`'s pipeline, not to markdown parsing itself.
-- Not reproducible with synthetic content of comparable length,
-  structure, or locative cross-references (`(some-func function)` style)
-  in a clean throwaway package.
-- Not reproducible by loading `:todo-app/deploy`'s full transitive
-  dependency set (SXQL, Consfigurator, Postmodern, cl-migratum, cl-inix,
-  Spinneret, individually and all together) alongside `40ants-doc-full`
-  in a clean package with the real failing text. Every combination
-  rendered fine.
-- Reproducible by defining that same real text inside the actual
-  `:todo-app/docs` package specifically, which `:use`s
-  `:todo-app/deploy` and `:todo-app/e2e` rather than importing
-  selectively. Something about that package's environment matters, not
-  just the dependency set being loaded.
-- Not a symbol-identity collision: `INLINE` resolves to the exact same
-  `COMMON-LISP:INLINE` in `:todo-app/docs` as everywhere else (`EQ`
-  checked directly), ruling out a same-named-different-symbol shadowing
-  theory that fit the evidence right up until it was actually tested.
+**Wrong turn two.** A later pass concluded raw parsing wasn't the
+problem, since `COMMONDOC-MARKDOWN::PARSE-MARKDOWN` succeeded standalone
+on what was believed to be the failing text. That test used a truncated
+prefix of the real docstring, not the complete text; re-tested against
+the actual, complete string, raw parsing fails too, in a totally clean
+environment with none of this project's own code loaded. The
+"reproducible only inside `:todo-app/docs`'s package environment"
+conclusion built on top of that truncated test was consequently also
+wrong.
 
-Left as an open, accurately-scoped question rather than a false-certainty
-diagnosis. `docs.ros` stays in the repo since everything else about it
-(loading `:todo-app/docs`, walking the section tree, writing to `build/`)
-is correct, and `@TODO-APP-DEPLOY` and `@QUADLETS` are exactly the two
-sections most worth documenting, which is the annoying part.
+**Wrong turn three.** A same-named-different-symbol shadowing theory
+(some other package's `INLINE` colliding with `COMMON-LISP:INLINE`) fit
+the evidence right up until checked directly with `EQ` and disproven.
+
+**What's actually true**, found by binary-searching the real, complete
+docstring text down to a minimal reproducer: `commondoc-markdown`'s
+smart-dash extension (`3bmd`'s handling of `--` as a typographic
+en/em-dash marker) breaks specifically on `--word` with no space before
+the word; `-word` (single hyphen) and `-- word` (space after) both parse
+fine. `@QUADLETS`'s docstring uses `` --user `` (a systemd flag) twice,
+unquoted, in running prose. `@TODO-APP-DEPLOY` doesn't contain the
+pattern itself, but its own entries list includes `(@quadlets section)`;
+rendering it recursively renders `@QUADLETS`'s content too, so it failed
+purely as a downstream consequence of the same single bug.
+
+**Fixed by wrapping both occurrences in backticks**: `` `--user` ``
+instead of bare `--user`. This isn't a workaround dressed up as a fix;
+a CLI flag in running prose should have been in a code span from the
+start, and inside a code span the text bypasses the smart-dash
+transform entirely. All five sections render correctly now, confirmed
+by re-running the same section-by-section test that caught the original
+failure, and `docs.ros` itself produces real Markdown output end to end.
+
+Worth remembering for every docstring written after this one: an
+unquoted CLI flag like `--user` or `--force` in 40ants-doc prose will
+break the Markdown build. Wrap it in backticks.

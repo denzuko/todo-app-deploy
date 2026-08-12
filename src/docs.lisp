@@ -80,9 +80,9 @@
    FILE:HAS-CONTENT rather than a hand-rolled file write. Nothing here
    hand-assembles a unit file as one long string, and nothing here
    reimplements what Consfigurator's file property already does correctly.
-   QUADLETS-ACTIVATED reloads the service user's --user systemd daemon and
+   QUADLETS-ACTIVATED reloads the service user's `--user` systemd daemon and
    restarts both containers once the unit files are in place; Consfigurator
-   has no built-in property that targets a different account's --user
+   has no built-in property that targets a different account's `--user`
    session through `machinectl shell`, so that one stays custom."
   (cinix-write-string function)
   (postgres-quadlet-sections function)

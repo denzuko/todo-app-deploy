@@ -33,13 +33,6 @@ install: $(TARGET).tgz
 test: $(TARGET).ros
 	@./$< e2e
 
-# `make doc` currently fails: docs.ros hits a real bug in
-# 40ants-doc-full's own markdown renderer, unrelated to this repo's code.
-# See finding 12 in FINDINGS.md. Left wired up as-is rather than papered
-# over, since the rest of docs.ros (loading :todo-app/docs, walking the
-# section tree, writing to build/) is correct and this is the kind of
-# thing an upstream dependency bump is more likely to fix than a
-# workaround here would.
 doc: $(MANROOT)/$(TARGET).1
 
 clean:

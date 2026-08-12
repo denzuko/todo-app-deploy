@@ -21,16 +21,26 @@ Consfigurator's, to decide it wants fail-fast semantics and wrap the call
 accordingly. None of the nine is upstream-worthy; each is fixed locally,
 and FINDINGS.md covers the fix.
 
-One finding, the twelfth, stays open rather than settled either way.
-`docs.ros`'s `ESRAP:UNDEFINED-RULE-ERROR` inside `commondoc-markdown`
-was narrowed a long way (which two of five sections fail, several ruled-out
-theories, a real content/package dependency confirmed) without reaching an
-actual root cause. Not upstream-worthy yet, since there isn't a diagnosed
-bug to report; premature to file anything against `commondoc-markdown`
-before knowing what's actually wrong.
+Three findings land differently, and each turns out to be a real gap in
+someone else's project rather than this script being wrong.
 
-Two findings land differently, and both turn out to be documentation gaps
-rather than code bugs.
+`3bmd`'s smart-dash extension (used by `commondoc-markdown`, which
+`40ants-doc-full` builds on) throws `ESRAP:UNDEFINED-RULE-ERROR: The rule
+INLINE is undefined` on a bare `--word` with no space, like a CLI flag
+written in running prose. Minimal repro: `(commondoc-markdown::parse-markdown
+"--user")` fails; `(commondoc-markdown::parse-markdown "-- user")` (space
+after) and `(commondoc-markdown::parse-markdown "-user")` (single hyphen)
+both succeed. This is a real bug in `3bmd`'s or `commondoc-markdown`'s
+grammar, not a documentation gap like the other two below, and not
+something to patch blind here: fixing an ESRAP grammar correctly needs
+more familiarity with that grammar's internals than skimming it from the
+outside gives. No patch prepared; the minimal repro above is enough to
+file an issue quickly whenever that's worth doing. Worked around locally
+by wrapping the flag in backticks in FINDINGS.md and in this project's
+own docstrings, which is arguably the more correct way to write a CLI
+flag in prose anyway, not just a workaround.
+
+Two findings land as pure documentation gaps rather than code bugs.
 
 Spinneret's `*always-quote*` already does the right thing: it exists
 specifically to force attribute quoting when Spinneret can't infer it from

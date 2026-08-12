@@ -14,7 +14,7 @@
                 :*service-user* :*home-mountpoint* :*secrets-path*
                 :*haproxy-fqdn* :*home-dataset* :*data-dataset*)
   (:export :run-e2e :unit-active-p :zfs-dataset-mountpoint
-           :read-db-password :latest-todo-id))
+           :zfs-dataset-encryption :read-db-password :latest-todo-id))
 
 (in-package :todo-app/e2e)
 
@@ -41,6 +41,16 @@
     (declare (ignore error-output))
     (and (zerop status) output)))
 
+(defun zfs-dataset-encryption (dataset)
+  "The encryption algorithm ZFS reports for DATASET (e.g. \"aes-256-gcm\"),
+   or \"off\" if it isn't encrypted, or NIL if DATASET doesn't exist."
+  (multiple-value-bind (output error-output status)
+      (uiop:run-program (format nil "zfs get -H -o value encryption ~A" dataset)
+                         :output '(:string :stripped t)
+                         :ignore-error-status t)
+    (declare (ignore error-output))
+    (and (zerop status) output)))
+
 (defun file-mode (path)
   "PATH's permission bits as an octal string, e.g. \"600\"."
   (string-trim '(#\Newline)
@@ -60,9 +70,12 @@
 (in-suite todo-app-e2e)
 
 (test zfs-datasets-mounted
-  "Both datasets exist and are mounted where TODO-APP/DEPLOY:DEPLOY-APP put them."
+  "Both datasets exist, are mounted where TODO-APP/DEPLOY:DEPLOY-APP put
+   them, and are AES-256-GCM encrypted."
   (is (equal *home-mountpoint* (zfs-dataset-mountpoint *home-dataset*)))
-  (is (equal "/srv/todo-app" (zfs-dataset-mountpoint *data-dataset*))))
+  (is (equal "/srv/todo-app" (zfs-dataset-mountpoint *data-dataset*)))
+  (is (equal "aes-256-gcm" (zfs-dataset-encryption *home-dataset*)))
+  (is (equal "aes-256-gcm" (zfs-dataset-encryption *data-dataset*))))
 
 (test service-account-lingering
   "The rootless service account exists and has linger enabled."

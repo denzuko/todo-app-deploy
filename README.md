@@ -184,17 +184,22 @@ logging in.
 zfs snapshot storage/users/todo-app@initial
 zfs snapshot storage/containers/todo-app@initial
 
-zfs send -p storage/users/todo-app@initial | \
+zfs send -w -p storage/users/todo-app@initial | \
   ssh youraccount@youraccount.rsync.net zfs receive -Fu data1/todo-app-users
-zfs send -p storage/containers/todo-app@initial | \
+zfs send -w -p storage/containers/todo-app@initial | \
   ssh youraccount@youraccount.rsync.net zfs receive -Fu data1/todo-app-containers
 ```
 
 `data1` is a stand-in for whatever pool name rsync.net actually assigns.
-`-p` on send carries dataset properties (including `mountpoint`) across,
-so a restore doesn't need them set by hand. `-u` on receive keeps the
-remote copy unmounted, since it's a backup target, not a second live
-copy.
+`-w` (raw) sends the still-encrypted on-disk blocks exactly as they sit
+locally, without ever decrypting them to build the stream; rsync.net
+never needs, sees, or can use the encryption key, they just hold opaque
+encrypted blocks. `-p` carries the rest of the dataset's properties
+(`mountpoint` included) across, so a restore doesn't need them set by
+hand. On receive, `-u` keeps the remote copy unmounted, since it's a
+backup target, not a second live copy; `-F` rolls the destination
+forward to match on every subsequent incremental, so it's included from
+the first send too rather than added later.
 
 **Incremental replication**, on a schedule:
 
@@ -210,9 +215,9 @@ replicate() {
   prev=$(zfs list -t snapshot -H -o name -s creation "$src" | tail -1)
   zfs snapshot "${src}@${TS}"
   if [ -n "$prev" ]; then
-    zfs send -i "$prev" "${src}@${TS}" | ssh "$HOST" zfs receive -Fu "$dst"
+    zfs send -w -i "$prev" "${src}@${TS}" | ssh "$HOST" zfs receive -Fu "$dst"
   else
-    zfs send -p "${src}@${TS}" | ssh "$HOST" zfs receive -Fu "$dst"
+    zfs send -w -p "${src}@${TS}" | ssh "$HOST" zfs receive -Fu "$dst"
   fi
 }
 
@@ -233,25 +238,47 @@ WantedBy=timers.target
 ```
 
 with a matching `.service` unit whose `ExecStart` is the script above.
-The generated secret travels in plaintext inside `storage/users/todo-app`;
-SSH already encrypts the send in transit, but if that's not enough for a
-given threat model, ZFS native encryption on the source dataset plus
-`zfs send -w` (raw, sends the still-encrypted blocks) is the next step,
-not something this project currently sets up.
+
+Both datasets are created with AES-256-GCM native ZFS encryption
+(`zfs-encryption-key` generates a raw key per dataset at
+`/etc/zfs-keys/todo-app-{users,containers}.key`, mode 0600, before
+`zfs-dataset-mounted` ever runs `zfs create`), which is what makes the
+raw sends above possible in the first place. Without `-w`, a plain
+`zfs send` of an unlocked encrypted dataset decrypts the data to build
+the stream; only `-w` keeps it encrypted end to end, at rest on
+rsync.net and not just in transit over SSH.
+
+This makes the key files themselves the single most important thing to
+get backed up, separately from the ZFS replication above: losing
+`/etc/zfs-keys/` after `storage/users/todo-app` or
+`storage/containers/todo-app` holds real data means the data (local
+*and* replicated to rsync.net) is unrecoverable, full stop, by design.
+Back them up somewhere that isn't itself inside either encrypted
+dataset and isn't rsync.net alone: a password manager, a second offline
+copy, whatever the actual key-management policy calls for. This project
+generates the keys; it doesn't solve where a second copy of them lives.
 
 **Recovery**, onto a fresh or repaired host, after
-[Requirements](#requirements) are met and before running
-`todo-app-deploy.ros`:
+[Requirements](#requirements) are met, the two key files are restored to
+`/etc/zfs-keys/` from wherever they're actually backed up (not from
+rsync.net; see above), and before running `todo-app-deploy.ros`:
 
 ```sh
 ssh youraccount@youraccount.rsync.net zfs list -t snapshot data1/todo-app-users
 ssh youraccount@youraccount.rsync.net zfs list -t snapshot data1/todo-app-containers
 # pick the snapshot to restore from, then:
-ssh youraccount@youraccount.rsync.net zfs send data1/todo-app-users@SNAP | \
-  zfs receive -F storage/users/todo-app
-ssh youraccount@youraccount.rsync.net zfs send data1/todo-app-containers@SNAP | \
-  zfs receive -F storage/containers/todo-app
+ssh youraccount@youraccount.rsync.net zfs send -w data1/todo-app-users@SNAP | \
+  zfs receive storage/users/todo-app
+ssh youraccount@youraccount.rsync.net zfs send -w data1/todo-app-containers@SNAP | \
+  zfs receive storage/containers/todo-app
 ```
+
+`-w` here for the same reason as replication: what's stored on rsync.net
+is itself a raw, still-encrypted stream (that's the whole point of
+sending it that way), and a dataset that was raw-received can only be
+raw-sent onward; there's no key on rsync.net's end to decrypt it with
+even if a plain send were attempted. The result is a dataset that
+exists locally but is encrypted and locked, not yet mounted.
 
 If the original send didn't carry `-p`, set the mountpoints explicitly
 so Consfigurator finds them where it expects:
@@ -261,11 +288,14 @@ zfs set mountpoint=/var/lib/todo-app storage/users/todo-app
 zfs set mountpoint=/srv/todo-app storage/containers/todo-app
 ```
 
-Then run `./todo-app-deploy.ros` as normal. `zfs-dataset-mounted`'s
-`:check` finds both datasets already present and does nothing further
-to them; the service account, linger, quadlets, and HAProxy vhost all get
-recreated fresh, and the Postgres container starts against the restored
-data directory rather than an empty one. Validate with
+Then run `./todo-app-deploy.ros` as normal, with the restored key files
+already in place. `zfs-dataset-mounted`'s `:check` finds both datasets
+present but not yet mounted, exactly the state a restore leaves them in,
+and its `:apply` loads the key and mounts rather than trying to
+`zfs create` over the restored data; the service account, linger,
+quadlets, and HAProxy vhost all get recreated fresh, and the Postgres
+container starts against the restored data directory rather than an
+empty one. Validate with
 `./todo-app-deploy.ros e2e`, and spot-check the actual data with the
 `psql` command from the Runbook above before considering the restore
 done.
@@ -293,13 +323,23 @@ userdel todo-app
 
 # 5. Destroy the ZFS datasets -- irreversible, takes the database and
 #    the generated secret with it. Confirm there's nothing worth keeping
-#    (a pg_dump, a snapshot) before this step.
+#    (a pg_dump, a snapshot, a current rsync.net replica) before this
+#    step.
 zfs destroy storage/containers/todo-app
 zfs destroy storage/users/todo-app
+
+# 6. Remove the encryption keys -- only after step 5 actually succeeded;
+#    they're useless without the datasets they unlock, but keep them
+#    until the destroy is confirmed rather than deleting both at once.
+rm /etc/zfs-keys/todo-app-users.key /etc/zfs-keys/todo-app-containers.key
 ```
 
 Podman images pulled into the service user's rootless store are removed
 along with the account in step 4; nothing separate to clean up there.
+
+If a copy of this stack was replicated to rsync.net, decommissioning it
+locally doesn't touch that remote copy; delete it there separately if
+it's not meant to outlive the local deploy.
 
 ## Layout
 

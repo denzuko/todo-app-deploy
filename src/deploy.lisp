@@ -14,13 +14,16 @@
   (:import-from :consfigurator
                 :defprop :defhost :deploy :run :mrun :stripln
                 :remote-exists-p :write-remote-file :on-change)
-  (:import-from :consfigurator.property.file :has-content)
+  (:import-from :consfigurator.property.file
+                :has-content :containing-directory-exists)
   (:import-from :consfigurator.property.systemd :lingering-enabled)
   (:import-from :consfigurator.property.service :reloaded)
   (:export :*service-user* :*home-mountpoint* :*data-mountpoint*
            :*secrets-path* :*haproxy-fqdn* :*home-dataset* :*data-dataset*
+           :*home-dataset-keyfile* :*data-dataset-keyfile*
            :deploy-app
-           :zfs-dataset-mounted :rootless-service-account :db-secret-file
+           :zfs-encryption-key :zfs-dataset-mounted :rootless-service-account
+           :db-secret-file
            :images-pulled :quadlets-activated
            :cinix-write-string :postgres-quadlet-sections
            :postgrest-quadlet-sections :todo-network-quadlet-sections
@@ -45,22 +48,60 @@
 (defparameter *home-mountpoint* "/var/lib/todo-app"
   "Service account home, backed by *HOME-DATASET*; holds the quadlet units
    and the persisted DB secret.")
+(defparameter *home-dataset-keyfile* "/etc/zfs-keys/todo-app-users.key"
+  "Raw ZFS encryption key for *HOME-DATASET*. Lives outside any ZFS
+   dataset it protects; a dataset can't supply its own decryption key
+   from inside itself.")
 (defparameter *data-dataset* "storage/containers/todo-app")
 (defparameter *data-mountpoint* "/srv/todo-app"
   "PostgreSQL data directory, backed by *DATA-DATASET*.")
+(defparameter *data-dataset-keyfile* "/etc/zfs-keys/todo-app-containers.key"
+  "Raw ZFS encryption key for *DATA-DATASET*. A separate key from
+   *HOME-DATASET-KEYFILE*; the two datasets don't share one.")
 (defparameter *secrets-path* "/var/lib/todo-app/.env/pgpass"
   "Generated once and left alone on redeploy. The postgres data volume's
    password can't be rotated out from under it on every run.")
 (defparameter *haproxy-vhost-name* "todo-app")
 (defparameter *haproxy-fqdn* "todo.dapla.net")
 
-(defprop zfs-dataset-mounted :posix (dataset mountpoint)
-  "Ensure DATASET exists as a ZFS dataset mounted at MOUNTPOINT."
-  (:desc (format nil "ZFS dataset ~A mounted at ~A" dataset mountpoint))
-  (:check (zerop (mrun :for-exit
-                        (format nil "zfs list -H -o name ~A" dataset))))
-  (:apply (mrun (format nil "zfs create -o mountpoint=~A ~A"
-                         mountpoint dataset))))
+(defprop zfs-encryption-key :posix (path)
+  "Generate a raw 32-byte ZFS encryption key at PATH via `openssl rand`,
+   once, left alone on redeploy. Losing this key after the dataset it
+   protects holds real data means losing the data, so regenerating it
+   isn't something a redeploy should ever do casually."
+  (:desc (format nil "ZFS encryption key at ~A" path))
+  (:check (remote-exists-p path))
+  (:apply
+   (containing-directory-exists path)
+   (let ((key (stripln (mrun "openssl" "rand" "-hex" "32"))))
+     (write-remote-file path key :mode #o600))))
+
+(defprop zfs-dataset-mounted :posix (dataset mountpoint &optional keyfile)
+  "Ensure DATASET exists, mounted at MOUNTPOINT. When KEYFILE is given,
+   the dataset is created with AES-256-GCM native encryption keyed from
+   that file (raw format, not an interactive passphrase, so an
+   unattended deploy never blocks on a prompt). If the dataset already
+   exists but isn't mounted, the state a reboot leaves an encrypted
+   dataset in when the key wasn't auto-loaded by zfs-mount-generator,
+   the key gets loaded and the dataset mounted rather than assuming
+   existence alone means nothing further is needed."
+  (:desc (format nil "ZFS dataset ~A mounted at ~A~:[~; (encrypted)~]"
+                  dataset mountpoint keyfile))
+  (:check
+   (multiple-value-bind (out err exit)
+       (run :may-fail (format nil "zfs get -H -o value mounted ~A" dataset))
+     (declare (ignore err))
+     (and (zerop exit) (string= "yes" (stripln out)))))
+  (:apply
+   (if (zerop (mrun :for-exit (format nil "zfs list -H -o name ~A" dataset)))
+       (progn
+         (when keyfile (mrun (format nil "zfs load-key ~A" dataset)))
+         (mrun (format nil "zfs mount ~A" dataset)))
+       (mrun (if keyfile
+                 (format nil "zfs create -o mountpoint=~A -o encryption=aes-256-gcm -o keyformat=raw -o keylocation=file://~A ~A"
+                         mountpoint keyfile dataset)
+                 (format nil "zfs create -o mountpoint=~A ~A"
+                         mountpoint dataset))))))
 
 (defprop rootless-service-account :posix (username home)
   "Ensure a system account USERNAME exists with home directory HOME,
@@ -78,10 +119,19 @@
   "Generate the postgres password once via `openssl rand -hex 32` and
    persist it at PATH, mode 0600, owned by USER. Left alone on redeploy;
    the postgres data volume's password can't be rotated out from under it
-   on every run."
+   on every run.
+
+   Found while working on ZFS-ENCRYPTION-KEY: WRITE-REMOTE-FILE has no
+   directory-creation logic of its own (confirmed by reading
+   CONNECTION-WRITE-FILE's :LOCAL method directly, not assumed), so this
+   always needed CONTAINING-DIRECTORY-EXISTS for PATH's .env/ subdirectory
+   and never had it. Never actually hit in testing because every prior
+   deploy attempt failed earlier, at the ZFS step, in every environment
+   this was run in."
   (:desc (format nil "DB secret at ~A" path))
   (:check (remote-exists-p path))
   (:apply
+   (containing-directory-exists path)
    (let ((pass (stripln (mrun "openssl" "rand" "-hex" "32"))))
      (write-remote-file
       path
@@ -186,18 +236,23 @@ backend ~A_be
                  user))))
 
 (defhost todo-app-host (:deploy (:local))
-  "The todo-app stack's host: ZFS datasets, the rootless service account
-   and its linger, the generated DB secret, pulled images, the three
-   quadlet units, and the HAProxy vhost, applied in dependency order.
-   Quadlet activation runs before the HAProxy reload only because that's
-   the more natural read order, not because it's required: HAProxy's
-   `check` directive already monitors backend health on its own, so a
-   reload against a not-yet-listening PostgREST is a normal transient
-   down state, not a failure condition. DEPLOY-APP below runs this, then
-   hands off to RUN-MIGRATIONS for the database layer, which is unrelated
-   to Consfigurator and stays exactly as it was."
-  (zfs-dataset-mounted *home-dataset* *home-mountpoint*)
-  (zfs-dataset-mounted *data-dataset* *data-mountpoint*)
+  "The todo-app stack's host: two AES-256-GCM-encrypted ZFS datasets,
+   the rootless service account and its linger, the generated DB secret,
+   pulled images, the three quadlet units, and the HAProxy vhost, applied
+   in dependency order. Each dataset's encryption key is generated before
+   the dataset itself, since ZFS-DATASET-MOUNTED needs the key file to
+   already exist to create an encrypted dataset. Quadlet activation runs
+   before the HAProxy reload only because that's the more natural read
+   order, not because it's required: HAProxy's `check` directive already
+   monitors backend health on its own, so a reload against a
+   not-yet-listening PostgREST is a normal transient down state, not a
+   failure condition. DEPLOY-APP below runs this, then hands off to
+   RUN-MIGRATIONS for the database layer, which is unrelated to
+   Consfigurator and stays exactly as it was."
+  (zfs-encryption-key *home-dataset-keyfile*)
+  (zfs-encryption-key *data-dataset-keyfile*)
+  (zfs-dataset-mounted *home-dataset* *home-mountpoint* *home-dataset-keyfile*)
+  (zfs-dataset-mounted *data-dataset* *data-mountpoint* *data-dataset-keyfile*)
   (rootless-service-account *service-user* *home-mountpoint*)
   (lingering-enabled *service-user*)
   (db-secret-file *secrets-path* *service-user*)

@@ -54,18 +54,28 @@
   (deploy-app function))
 
 (defsection @provisioning (:title "ZFS, the service account, and secrets")
-  "Before any container can start, the host needs: two ZFS datasets (one
-   for the service account's home, one for Postgres's data directory), a
-   rootless system account with systemd linger enabled so its session
-   keeps running without anyone logged in, a database password generated
-   once and kept around for the life of the data volume, and the two
-   container images already sitting in that account's own rootless image
-   store. Each of these is a Consfigurator property in TODO-APP-HOST's
-   property list, applied in order, each with its own :CHECK so a redeploy
-   only touches what's actually missing."
+  "Before any container can start, the host needs: two AES-256-GCM
+   encrypted ZFS datasets (one for the service account's home, one for
+   Postgres's data directory), each keyed from its own raw key file
+   generated once and never shared between the two; a rootless system
+   account with systemd linger enabled so its session keeps running
+   without anyone logged in; a database password generated once and kept
+   around for the life of the data volume; and the two container images
+   already sitting in that account's own rootless image store. Each of
+   these is a Consfigurator property in TODO-APP-HOST's property list,
+   applied in order, each with its own :CHECK so a redeploy only touches
+   what's actually missing. ZFS-DATASET-MOUNTED's :CHECK specifically
+   verifies the dataset is mounted, not just that it exists: an encrypted
+   dataset that survived a reboot without its key auto-loading is a real
+   state a plain existence check would miss, silently leaving every
+   property after it operating against an unmounted, inaccessible
+   directory."
   (*home-mountpoint* variable)
   (*data-mountpoint* variable)
+  (*home-dataset-keyfile* variable)
+  (*data-dataset-keyfile* variable)
   (*secrets-path* variable)
+  (zfs-encryption-key function)
   (zfs-dataset-mounted function)
   (rootless-service-account function)
   (db-secret-file function)

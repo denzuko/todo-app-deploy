@@ -9,11 +9,13 @@ text.
 
 ## What it builds
 
-- Two ZFS datasets, a rootless systemd-user service account with linger
-  enabled, and a generated database password persisted under that account's
-  home, each provisioned as a Consfigurator property (custom where no
-  built-in fits, Consfigurator's own where one does) rather than a
-  hand-rolled shell-out.
+- Two AES-256-GCM natively-encrypted ZFS datasets, each keyed from its
+  own raw key file generated once outside the dataset it protects; a
+  rootless systemd-user service account with linger enabled; and a
+  generated database password persisted under that account's home. Each
+  provisioned as a Consfigurator property (custom where no built-in
+  fits, Consfigurator's own where one does) rather than a hand-rolled
+  shell-out.
 - Three Podman quadlet units (Postgres, PostgREST, a shared network),
   serialized from an in-memory `(section . ((key . value) ...))`
   representation rather than a heredoc. It's the same shape `cl-inix:read`

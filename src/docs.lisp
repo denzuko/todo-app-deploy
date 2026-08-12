@@ -70,7 +70,9 @@
    state a plain existence check would miss, silently leaving every
    property after it operating against an unmounted, inaccessible
    directory."
+  (*home-dataset* variable)
   (*home-mountpoint* variable)
+  (*data-dataset* variable)
   (*data-mountpoint* variable)
   (*home-dataset-keyfile* variable)
   (*data-dataset-keyfile* variable)
@@ -99,13 +101,15 @@
   (postgrest-quadlet-sections function)
   (todo-network-quadlet-sections function)
   (quadlets-activated function)
+  (*haproxy-fqdn* variable)
   (haproxy-vhost-config function))
 
 (defsection @database (:title "Schema, grants, and the HTML the database serves")
   "The migration is built once, as a list of statements, and joined at the
-   end. Table and schema creation goes through SXQL. GRANT and CREATE ROLE
-   don't have SXQL support, so SQL-GRANT and SQL-CREATE-ROLE fill that gap
-   the same way CINIX-WRITE-STRING fills it for quadlets. The two HTML
+   end. Table creation goes through SXQL. Schema creation, GRANT, and
+   CREATE ROLE don't have SXQL support, so SQL-CREATE-SCHEMA,
+   SQL-GRANT, and SQL-CREATE-ROLE fill that gap the same way
+   CINIX-WRITE-STRING fills it for quadlets. The two HTML
    fragments PL/pgSQL serves back to the browser (the page shell and the
    per-item row) are Spinneret templates rather than string
    concatenation; the one exception is the to-do checkbox's `checked`
@@ -126,6 +130,7 @@
   (generate-index-html-template function)
   (generate-render-todo-html-template function)
   (escape-pg-string-literal function)
+  (sql-create-schema function)
   (sql-create-domain function)
   (sql-create-role function)
   (sql-grant function)
@@ -152,6 +157,7 @@
   (*service-user* variable)
   (unit-active-p function)
   (zfs-dataset-mountpoint function)
+  (zfs-dataset-encryption function)
   (read-db-password function)
   (latest-todo-id function)
   (run-e2e function))

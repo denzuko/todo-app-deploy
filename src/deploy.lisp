@@ -30,7 +30,7 @@
            :haproxy-vhost-config
            :generate-index-html-template :generate-render-todo-html-template
            :escape-pg-string-literal
-           :sql-create-domain :sql-create-role :sql-grant :sql-grant-execute
+           :sql-create-schema :sql-create-domain :sql-create-role :sql-grant :sql-grant-execute
            :build-migration-sql :ram-migration :ram-provider
            :make-ram-provider :make-ram-migration :next-migration-id
            :run-migrations))

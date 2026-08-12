@@ -76,6 +76,14 @@
    (let ((key (stripln (mrun "openssl" "rand" "-hex" "32"))))
      (write-remote-file path key :mode #o600))))
 
+(defun zfs-create-command (dataset mountpoint keyfile)
+  "The `zfs create` command line for DATASET at MOUNTPOINT: with
+   AES-256-GCM encryption keyed from KEYFILE when given, plain otherwise."
+  (if keyfile
+      (format nil "zfs create -o mountpoint=~A -o encryption=aes-256-gcm -o keyformat=raw -o keylocation=file://~A ~A"
+              mountpoint keyfile dataset)
+      (format nil "zfs create -o mountpoint=~A ~A" mountpoint dataset)))
+
 (defprop zfs-dataset-mounted :posix (dataset mountpoint &optional keyfile)
   "Ensure DATASET exists, mounted at MOUNTPOINT. When KEYFILE is given,
    the dataset is created with AES-256-GCM native encryption keyed from
@@ -97,11 +105,7 @@
        (progn
          (when keyfile (mrun (format nil "zfs load-key ~A" dataset)))
          (mrun (format nil "zfs mount ~A" dataset)))
-       (mrun (if keyfile
-                 (format nil "zfs create -o mountpoint=~A -o encryption=aes-256-gcm -o keyformat=raw -o keylocation=file://~A ~A"
-                         mountpoint keyfile dataset)
-                 (format nil "zfs create -o mountpoint=~A ~A"
-                         mountpoint dataset))))))
+       (mrun (zfs-create-command dataset mountpoint keyfile)))))
 
 (defprop rootless-service-account :posix (username home)
   "Ensure a system account USERNAME exists with home directory HOME,
